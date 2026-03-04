@@ -92,7 +92,7 @@ Autonomous target tracking system: detect, track, and aim at moving objects usin
 
 ---
 
-## References (from abstract)
+## References 
 
 1. Bradski & Kaehler, *Learning OpenCV*, O'Reilly.  
 2. OpenCV Documentation — Image Processing.  
