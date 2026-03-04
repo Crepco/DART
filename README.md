@@ -57,15 +57,44 @@ Autonomous target tracking system: detect, track, and aim at moving objects usin
 
 ## Phase 1 — Tracking (software prototype)
 
-- **Goal:** Validate vision pipeline, serial protocol, and servo control before mechanical integration.
-- **Setup:** Webcam on laptop; Arduino with test servos (e.g. on breadboard).
-- **Steps:**  
-  1. Webcam at 640×480.  
-  2. Object detection: HSV, morphology, contours, centroid.  
-  3. Pixel → servo angle conversion (FOV-based).  
-  4. Serial: connect, send coordinate packets, validate.  
-  5. Arduino: parse packets and drive servos from coordinates.
-- **Targets (from abstract):** ~90% detection in good light; serial latency &lt; 50 ms; servo response &lt; 200 ms; total latency ~350 ms.
+Phase 1 validates the full pipeline (camera → detection → serial → servos) **without** any weapon. You get real-time face tracking with a USB webcam and two continuous-rotation MG996R servos (pan and tilt) on a breadboard or simple mount.
+
+### Goal
+
+- Prove vision pipeline, serial protocol, and servo control before building the physical turret (Phase 2).
+- Use **face detection** (Haar cascade) as the target; same architecture can later use color/contour or other detectors.
+
+### Setup
+
+- **Laptop:** USB webcam, Python 3 with OpenCV and PySerial.
+- **Arduino:** Uno (or compatible) with two MG996R continuous-rotation servos.
+- **Wiring:** Pan servo on pin 10, tilt servo on pin 9; servo power from external 6 V supply (common GND with Arduino).
+
+### What runs where
+
+| Component | Location | Role |
+|-----------|----------|------|
+| **Camera + detection** | Laptop (`face_tracker.py`) | Capture video, detect face, compute pan/tilt speed commands. |
+| **Serial link** | USB | Send commands `P###T###` at up to 30 Hz from Python to Arduino. |
+| **Servo drive** | Arduino (`arduino_servo_controller.ino`) | Parse commands, clamp to safe range, drive servos; safety timeout if no command. |
+
+### Pipeline (step by step)
+
+1. **Webcam** — Threaded capture; optional MJPEG and small buffer for low latency.
+2. **Detection** — Scaled frame → grayscale → Haar cascade (frontal face); largest face chosen; coordinates scaled back to full frame.
+3. **Control law** — Face center vs frame center → error in X/Y; dead zone to reduce jitter; proportional gain → pan/tilt speed; smoothing on position and on command.
+4. **Serial** — One line per update: `P###T###\n` (pan and tilt as speed 065–115; 090 = stop). Rate-limited (e.g. 30 Hz).
+5. **Arduino** — Line-based parser; clamp values to safe range; drive servos; if no command for 250 ms, stop both servos.
+
+### Phase 1 documentation (in repo)
+
+- **[Phase 1 — Python script](phase_1/FACE_TRACKER.md)** — `face_tracker.py`: config, threading (camera + detector), control logic, serial protocol, HUD, dependencies, and usage.
+- **[Phase 1 — Arduino controller](phase_1/arduino_servo_controller/ARDUINO_CONTROLLER.md)** — `arduino_servo_controller.ino`: pins, constants, serial protocol, parsing, safety timeout, and wiring.
+
+### Targets (from project abstract)
+
+- ~90% detection in good lighting.
+- Serial latency &lt; 50 ms; servo response &lt; 200 ms; total system latency ~350 ms (under 500 ms goal).
 
 ---
 
