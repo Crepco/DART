@@ -31,7 +31,7 @@
 #define STOP_TILT   90   // Servo value that means "don't move" for tilt
 
 // ── Speed cap (max offset from stop) ─────
-#define MAX_SPEED   25   // Servo range is [90-25, 90+25] = [65, 115]; keep in sync with Python
+#define MAX_SPEED   35   // Servo range is [90-25, 90+25] = [65, 115]; keep in sync with Python
 
 // ── Safety timeout ───────────────
 #define TIMEOUT_MS  250  // If no serial command for this long, stop both servos

@@ -25,7 +25,7 @@ import serial  # PySerial: talk to Arduino over USB
 STOP_PAN  = 90   # Servo value for pan "stop" (continuous rotation neutral)
 STOP_TILT = 90   # Servo value for tilt "stop" (continuous rotation neutral)
 
-MAX_SPEED = 25   # Max offset from 90; servo range becomes 65..115
+MAX_SPEED = 35   # Max offset from 90; servo range becomes 65..115
 
 GAIN_PAN  = 0.10  # How much pan speed per pixel of horizontal error (after dead zone)
 GAIN_TILT = 0.09  # How much tilt speed per pixel of vertical error (after dead zone)
