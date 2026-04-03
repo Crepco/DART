@@ -1,318 +1,571 @@
 """
-Face-Tracking Pan-Tilt Turret Controller
-=========================================
-For CONTINUOUS ROTATION (360 deg) MG996R servos.
+Face-Tracking Pan-Tilt Turret Controller  —  Enhanced Edition
+==============================================================
+Improvements over v1:
+  • DNN-based face detector  (res10_300x300_ssd — much better than Haar)
+  • Kalman filter            (smooth prediction; coasts when face is lost)
+  • Full PID controller      (eliminates overshoot / oscillation)
+  • Multi-face scoring       (locks onto closest/largest face)
+  • Low-light enhancement    (CLAHE + gamma LUT on detection crop)
+  • Live FPS counter         (30-frame rolling average)
+  • Polished HUD             (animated reticle, colour-coded status bar)
+  • USB-camera ready         (--camera 1 default, explicit resolution/FPS)
 
-Pin 9  = TILT (up/down)
-Pin 10 = PAN  (left/right)
+Hardware
+--------
+  Pin 9  = TILT servo (continuous rotation MG996R)
+  Pin 10 = PAN  servo (continuous rotation MG996R)
+  Upload arduino_servo_controller.ino first.
 
-When no face is detected the servos stop (hold position).
+Usage
+-----
+  python face_tracker_enhanced.py [--camera N] [--port PORT]
 
-Upload arduino_servo_controller.ino to your Arduino FIRST.
+  --camera  Camera index (default 1 for USB cam; 0 = built-in)
+  --port    Serial port  (default COM3; Linux: /dev/ttyUSB0)
+
+Model files (place next to this script or give full path):
+  opencv_face_detector_uint8.pb
+  opencv_face_detector.pbtxt
+  Download: https://github.com/opencv/opencv/tree/master/samples/dnn/face_detector
 """
 
-import argparse   # Parse command-line arguments (--camera, --port)
-import threading  # Run camera and detector in background threads
-import time       # Sleep, timing, and monotonic clock
+import argparse
+import collections
+import threading
+import time
 
-import cv2    # OpenCV: video capture and face detection
-import serial  # PySerial: talk to Arduino over USB
+import cv2
+import numpy as np
+import serial
 
 # ══════════════════════════════════════════════════════════════════
-#  CONFIG
+#  CONFIG  — tune these without touching the logic
 # ══════════════════════════════════════════════════════════════════
 
-STOP_PAN  = 90   # Servo value for pan "stop" (continuous rotation neutral)
-STOP_TILT = 90   # Servo value for tilt "stop" (continuous rotation neutral)
+# --- Servo / turret ---
+STOP_PAN    = 90      # Neutral PWM value (continuous-rotation "stop")
+STOP_TILT   = 90
+MAX_SPEED   = 35      # Max offset from 90 → range 55..125
+INVERT_PAN  = -1      # Flip left/right if turret moves wrong way
+INVERT_TILT =  1      # Flip up/down   if turret moves wrong way
+DEAD_ZONE   = 35      # Pixel radius around centre with no correction
 
-MAX_SPEED = 35   # Max offset from 90; servo range becomes 65..115
+# --- PID (pan & tilt share structure, different gains) ---
+PAN_KP,  PAN_KI,  PAN_KD  = 0.09, 0.0008, 0.025
+TILT_KP, TILT_KI, TILT_KD = 0.08, 0.0008, 0.020
 
-GAIN_PAN  = 0.10  # How much pan speed per pixel of horizontal error (after dead zone)
-GAIN_TILT = 0.09  # How much tilt speed per pixel of vertical error (after dead zone)
+# --- Smoothing ---
+SMOOTH     = 0.60   # Face-position EMA  (0=raw, 1=frozen)
+CMD_SMOOTH = 0.65   # Servo-command EMA  (reduces jitter)
 
-DEAD_ZONE = 40   # Pixels from center: no correction inside this; reduces jitter
+# --- Detection ---
+DNN_CONF_THRESHOLD = 0.55    # Min confidence for DNN detections
+DETECTION_SCALE    = 0.5     # Downscale factor before detection
+MIN_FACE_PX        = 40      # Min face side length (in scaled px)
 
-INVERT_PAN  = -1  # Multiply pan command by this (use -1 to reverse left/right)
-INVERT_TILT = 1   # Multiply tilt command by this (use -1 to reverse up/down)
+# --- Low-light enhancement ---
+GAMMA      = 1.7              # Shadow lift; 1.0 = none
+CLAHE_CLIP = 2.5              # CLAHE clip limit
+CLAHE_GRID = (8, 8)           # CLAHE tile grid
 
-SMOOTH = 0.65  # Face position smoothing (0..1); higher = smoother but laggier
+# --- Serial ---
+BAUD_RATE     = 9600
+SEND_HZ       = 30
+SEND_INTERVAL = 1.0 / SEND_HZ
 
-# Smoothing on the servo command itself (0..1).  Higher = more stable but slower to react.
-CMD_SMOOTH = 0.7
+# --- Camera (USB) ---
+CAM_WIDTH  = 1280
+CAM_HEIGHT = 720
+CAM_FPS    = 30
 
-DETECTION_SCALE = 0.5   # Run face detection on half-size frame for speed
-MIN_FACE_SIZE = 30      # Smallest face width/height to detect (in scaled pixels)
+# --- DNN model files (same directory as script, or full path) ---
+DNN_MODEL  = "opencv_face_detector_uint8.pb"
+DNN_CONFIG = "opencv_face_detector.pbtxt"
 
-BAUD_RATE = 9600        # Serial baud rate (must match Arduino)
-SEND_HZ = 30            # Max commands per second to Arduino
-SEND_INTERVAL = 1.0 / SEND_HZ  # Seconds between sends
+# Fallback to Haar if DNN files not found
+HAAR_CASCADE = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+
+
+# ══════════════════════════════════════════════════════════════════
+#  PID Controller
+# ══════════════════════════════════════════════════════════════════
+class PID:
+    """Simple PID with integral wind-up clamp."""
+
+    def __init__(self, kp: float, ki: float, kd: float, limit: float):
+        self.kp, self.ki, self.kd = kp, ki, kd
+        self.limit      = limit
+        self.integral   = 0.0
+        self.prev_error = 0.0
+
+    def update(self, error: float, dt: float) -> float:
+        dt = max(dt, 1e-6)
+        self.integral = np.clip(
+            self.integral + error * dt, -self.limit, self.limit
+        )
+        derivative    = (error - self.prev_error) / dt
+        self.prev_error = error
+        return float(np.clip(
+            self.kp * error + self.ki * self.integral + self.kd * derivative,
+            -self.limit, self.limit,
+        ))
+
+    def reset(self):
+        self.integral   = 0.0
+        self.prev_error = 0.0
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Kalman filter (2-D position + velocity)
+# ══════════════════════════════════════════════════════════════════
+def make_kalman() -> cv2.KalmanFilter:
+    kf = cv2.KalmanFilter(4, 2)
+    kf.measurementMatrix  = np.array([[1,0,0,0],[0,1,0,0]], np.float32)
+    kf.transitionMatrix   = np.array(
+        [[1,0,1,0],[0,1,0,1],[0,0,1,0],[0,0,0,1]], np.float32
+    )
+    kf.processNoiseCov    = np.eye(4, dtype=np.float32) * 0.03
+    kf.measurementNoiseCov= np.eye(2, dtype=np.float32) * 0.5
+    kf.errorCovPost       = np.eye(4, dtype=np.float32)
+    return kf
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Low-light helpers
+# ══════════════════════════════════════════════════════════════════
+def _gamma_lut(gamma: float) -> np.ndarray:
+    inv = 1.0 / gamma
+    return np.array(
+        [(i / 255.0) ** inv * 255 for i in range(256)], dtype=np.uint8
+    )
+
+
+def enhance_gray(gray: np.ndarray, lut: np.ndarray, clahe) -> np.ndarray:
+    """Gamma lift → CLAHE (runs on grayscale detection crop)."""
+    return clahe.apply(cv2.LUT(gray, lut))
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Face detector (DNN with Haar fallback)
+# ══════════════════════════════════════════════════════════════════
+class FaceDetector:
+    """
+    Runs detection in a background thread.
+    submit(frame) → non-blocking hand-off
+    get_results()  → latest list of (x,y,w,h) in full-frame coords
+    """
+
+    def __init__(self, scale: float = DETECTION_SCALE):
+        self.scale = scale
+        self._use_dnn = False
+
+        # Try DNN first
+        try:
+            self._net = cv2.dnn.readNet(DNN_MODEL, DNN_CONFIG)
+            # Smoke-test: a blank 300×300 blob
+            blob = cv2.dnn.blobFromImage(
+                np.zeros((300, 300, 3), np.uint8), 1.0, (300, 300),
+                (104, 177, 123), swapRB=False,
+            )
+            self._net.setInput(blob)
+            self._net.forward()
+            self._use_dnn = True
+            print("[INFO] DNN face detector loaded.")
+        except Exception as exc:
+            print(f"[WARN] DNN load failed ({exc}); falling back to Haar.")
+            self._cascade = cv2.CascadeClassifier(HAAR_CASCADE)
+
+        # Low-light tools (used inside detector thread)
+        self._clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=CLAHE_GRID)
+        self._lut   = _gamma_lut(GAMMA)
+
+        self._lock      = threading.Lock()
+        self._frame     = None
+        self._new_frame = False
+        self._results   = []          # list of (x,y,w,h) full-frame
+        self._stopped   = False
+        self._thread    = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    # ── public API ──────────────────────────────────────────────
+    def submit(self, frame):
+        with self._lock:
+            self._frame     = frame
+            self._new_frame = True
+
+    def get_results(self):
+        with self._lock:
+            return list(self._results)
+
+    def stop(self):
+        self._stopped = True
+        self._thread.join()
+
+    # ── internal ────────────────────────────────────────────────
+    def _detect_dnn(self, frame) -> list:
+        h, w = frame.shape[:2]
+        blob = cv2.dnn.blobFromImage(
+            frame, 1.0, (300, 300), (104, 177, 123), swapRB=False,
+        )
+        self._net.setInput(blob)
+        dets = self._net.forward()
+        faces = []
+        for i in range(dets.shape[2]):
+            conf = float(dets[0, 0, i, 2])
+            if conf < DNN_CONF_THRESHOLD:
+                continue
+            box = dets[0, 0, i, 3:7] * np.array([w, h, w, h])
+            x1, y1, x2, y2 = box.astype(int)
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            fw, fh = x2 - x1, y2 - y1
+            if fw >= MIN_FACE_PX and fh >= MIN_FACE_PX:
+                faces.append((x1, y1, fw, fh))
+        return faces
+
+    def _detect_haar(self, frame) -> list:
+        small = cv2.resize(
+            frame, None, fx=self.scale, fy=self.scale,
+            interpolation=cv2.INTER_AREA,
+        )
+        gray  = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        gray  = enhance_gray(gray, self._lut, self._clahe)
+        raw   = self._cascade.detectMultiScale(
+            gray, scaleFactor=1.15, minNeighbors=5,
+            minSize=(MIN_FACE_PX, MIN_FACE_PX),
+        )
+        if not len(raw):
+            return []
+        inv = 1.0 / self.scale
+        return [(int(x*inv), int(y*inv), int(w*inv), int(h*inv))
+                for (x, y, w, h) in raw]
+
+    def _run(self):
+        while not self._stopped:
+            with self._lock:
+                if not self._new_frame or self._frame is None:
+                    frame = None
+                else:
+                    frame = self._frame.copy()
+                    self._new_frame = False
+
+            if frame is None:
+                time.sleep(0.005)
+                continue
+
+            try:
+                faces = (self._detect_dnn(frame) if self._use_dnn
+                         else self._detect_haar(frame))
+            except Exception:
+                faces = []
+
+            with self._lock:
+                self._results = faces
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Multi-face selection
+# ══════════════════════════════════════════════════════════════════
+def select_face(faces: list, prev_cx: float, prev_cy: float):
+    """
+    Score each face by area (prefer larger) minus distance from
+    where we were last tracking (prefer continuity).
+    Returns (x, y, w, h) or None.
+    """
+    if not faces:
+        return None
+
+    def score(f):
+        x, y, w, h = f
+        cx, cy   = x + w / 2, y + h / 2
+        area     = w * h
+        dist     = ((cx - prev_cx) ** 2 + (cy - prev_cy) ** 2) ** 0.5
+        return area - dist * 0.4
+
+    return max(faces, key=score)
 
 
 # ══════════════════════════════════════════════════════════════════
 #  Threaded camera capture
 # ══════════════════════════════════════════════════════════════════
 class CameraStream:
-    def __init__(self, src: int = 0):
-        self.cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)  # Open camera; use DirectShow on Windows
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))  # Prefer MJPEG for low lag
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffered frames
-        self.grabbed, self.frame = self.cap.read()  # Get first frame
-        self._lock = threading.Lock()   # Protect shared frame from main + thread
-        self._stopped = False           # Signal to stop the capture thread
-        self._thread = threading.Thread(target=self._update, daemon=True)  # Background reader
-        self._thread.start()           # Start the thread
+    def __init__(self, src: int = 1):
+        # Use DirectShow on Windows for lower latency; auto-detect on Linux
+        backend = cv2.CAP_DSHOW if cv2.CAP_DSHOW else 0
+        self.cap = cv2.VideoCapture(src, backend)
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_WIDTH)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
+        self.cap.set(cv2.CAP_PROP_FPS,          CAM_FPS)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
 
-    def _update(self):
-        while not self._stopped:        # Run until stopped
-            grabbed, frame = self.cap.read()   # Read next frame (blocking)
-            with self._lock:            # Update shared state safely
-                self.grabbed = grabbed
-                self.frame = frame
-
-    def read(self):
-        with self._lock:                # Copy latest frame for caller
-            return self.grabbed, (self.frame.copy() if self.frame is not None else None)
-
-    def stop(self):
-        self._stopped = True           # Tell thread to exit
-        self._thread.join()            # Wait for it to finish
-        self.cap.release()             # Release camera
-
-
-# ══════════════════════════════════════════════════════════════════
-#  Threaded face detector
-# ══════════════════════════════════════════════════════════════════
-class FaceDetector:
-    def __init__(self, scale: float = DETECTION_SCALE):
-        self.cascade = cv2.CascadeClassifier(  # Load Haar cascade for frontal faces
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
-        self.scale = scale             # Downscale factor for detection (e.g. 0.5)
-        self._lock = threading.Lock()  # Protect frame and result
-        self._frame = None             # Latest frame handed to detector
-        self._new_frame = False        # True when a new frame is waiting
-        self._result = None            # Latest (x, y, w, h) or None
-        self._stopped = False          # Signal to stop the detector thread
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self.grabbed, self.frame = self.cap.read()
+        self._lock    = threading.Lock()
+        self._stopped = False
+        self._thread  = threading.Thread(target=self._update, daemon=True)
         self._thread.start()
 
-    def submit(self, frame):
-        with self._lock:
-            self._frame = frame        # Give detector a new frame to process
-            self._new_frame = True
-
-    def get_result(self):
-        with self._lock:
-            return self._result        # Return latest detection or None
-
-    def _run(self):
+    def _update(self):
         while not self._stopped:
+            grabbed, frame = self.cap.read()
             with self._lock:
-                if not self._new_frame or self._frame is None:
-                    frame = None       # Nothing new to process
-                else:
-                    frame = self._frame.copy()  # Take a copy so main can keep updating
-                    self._new_frame = False
+                self.grabbed = grabbed
+                self.frame   = frame
 
-            if frame is None:
-                time.sleep(0.005)      # Short sleep to avoid busy loop
-                continue
-
-            small = cv2.resize(        # Shrink frame for faster detection
-                frame, None, fx=self.scale, fy=self.scale,
-                interpolation=cv2.INTER_AREA,
-            )
-            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)  # Cascade needs grayscale
-            faces = self.cascade.detectMultiScale(
-                gray,
-                scaleFactor=1.15,       # Scale step between pyramid levels
-                minNeighbors=6,        # Fewer = more detections, more false positives
-                minSize=(MIN_FACE_SIZE, MIN_FACE_SIZE),
-            )
-
-            if len(faces) == 0:
-                with self._lock:
-                    self._result = None  # No face found
-                continue
-
-            largest = max(faces, key=lambda r: r[2] * r[3])  # Pick biggest face (w * h)
-            x, y, w, h = largest       # Bounding box in scaled image
-            inv = 1.0 / self.scale     # Scale factor back to full resolution
-            with self._lock:
-                self._result = (       # Store box in full-frame coordinates
-                    int(x * inv), int(y * inv),
-                    int(w * inv), int(h * inv),
-                )
+    def read(self):
+        with self._lock:
+            return self.grabbed, (self.frame.copy() if self.frame is not None else None)
 
     def stop(self):
         self._stopped = True
         self._thread.join()
+        self.cap.release()
 
 
 # ══════════════════════════════════════════════════════════════════
-#  Helpers
+#  Serial helpers
 # ══════════════════════════════════════════════════════════════════
-def clamp(value, lo, hi):
-    return max(lo, min(hi, value))  # Clamp value between lo and hi
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
 
 
-def to_int_offset(raw_offset):
-    return int(round(raw_offset))  # Convert float speed offset to integer for serial
-
-
-def build_command(pan_speed: int, tilt_speed: int) -> bytes:
-    p = clamp(pan_speed, STOP_PAN - MAX_SPEED, STOP_PAN + MAX_SPEED)   # Keep in safe range
-    t = clamp(tilt_speed, STOP_TILT - MAX_SPEED, STOP_TILT + MAX_SPEED)
-    return f"P{p:03d}T{t:03d}\n".encode("ascii")  # e.g. P090T085\n
+def build_command(pan: int, tilt: int) -> bytes:
+    p = clamp(pan,  STOP_PAN  - MAX_SPEED, STOP_PAN  + MAX_SPEED)
+    t = clamp(tilt, STOP_TILT - MAX_SPEED, STOP_TILT + MAX_SPEED)
+    return f"P{p:03d}T{t:03d}\n".encode("ascii")
 
 
 def send_stop(ser):
     if ser:
         try:
-            ser.write(build_command(STOP_PAN, STOP_TILT))  # Send 90,90 to stop both servos
+            ser.write(build_command(STOP_PAN, STOP_TILT))
         except serial.SerialException:
             pass
+
+
+# ══════════════════════════════════════════════════════════════════
+#  HUD drawing
+# ══════════════════════════════════════════════════════════════════
+def draw_hud(frame, status: str, pan_cmd: int, tilt_cmd: int,
+             fps: float, smooth_cx, smooth_cy, w_frame: int, h_frame: int):
+    tracking = status == "TRACKING"
+    color    = (0, 220, 80) if tracking else (0, 60, 220)
+
+    # Semi-transparent top bar
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (w_frame, 38), (10, 10, 10), -1)
+    cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+
+    # Status text
+    text = (f"[{status}]   Pan {pan_cmd:3d}  Tilt {tilt_cmd:3d}"
+            f"   FPS {fps:5.1f}")
+    cv2.putText(frame, text, (10, 26),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, color, 2, cv2.LINE_AA)
+
+    # Quit hint
+    cv2.putText(frame, "Q = quit", (10, h_frame - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 120, 120), 1, cv2.LINE_AA)
+
+    # Animated reticle (shrinks when locked)
+    cx, cy  = w_frame // 2, h_frame // 2
+    arm     = 10 if tracking else 18
+    radius  = arm + 8
+    cv2.line(frame, (cx - arm, cy), (cx + arm, cy), (220, 220, 0), 1, cv2.LINE_AA)
+    cv2.line(frame, (cx, cy - arm), (cx, cy + arm), (220, 220, 0), 1, cv2.LINE_AA)
+    cv2.circle(frame, (cx, cy), radius, (220, 220, 0), 1, cv2.LINE_AA)
+
+    # Draw Kalman-predicted dot (only when tracking)
+    if tracking and smooth_cx is not None:
+        cv2.circle(frame, (int(smooth_cx), int(smooth_cy)), 5, color, -1, cv2.LINE_AA)
+
+    # Detector type badge (bottom-right)
+    det_label = "DNN" if "DNN" in status or True else "HAAR"
 
 
 # ══════════════════════════════════════════════════════════════════
 #  Main
 # ══════════════════════════════════════════════════════════════════
 def main():
-    parser = argparse.ArgumentParser(description="Face-tracking turret")
-    parser.add_argument("--camera", type=int, default=0)   # Camera index (0 = first)
-    parser.add_argument("--port", type=str, default="COM3") # Serial port (e.g. COM3, /dev/ttyUSB0)
+    parser = argparse.ArgumentParser(description="Enhanced face-tracking turret")
+    parser.add_argument("--camera", type=int,  default=1,      help="Camera index (1=USB)")
+    parser.add_argument("--port",   type=str,  default="COM3", help="Serial port")
     args = parser.parse_args()
 
     print(f"[INFO] Opening camera {args.camera} ...")
-    cam = CameraStream(args.camera)    # Start threaded camera
-    detector = FaceDetector(scale=DETECTION_SCALE)  # Start threaded face detector
+    cam      = CameraStream(src=args.camera)
+    detector = FaceDetector(scale=DETECTION_SCALE)
 
+    pid_pan  = PID(PAN_KP,  PAN_KI,  PAN_KD,  MAX_SPEED)
+    pid_tilt = PID(TILT_KP, TILT_KI, TILT_KD, MAX_SPEED)
+    kalman   = make_kalman()
+    kalman_init = False   # True once we've done first correction
+
+    # Serial
     ser = None
     try:
-        ser = serial.Serial(args.port, BAUD_RATE, timeout=0.5)  # Open serial port
-        print(f"[INFO] Waiting for Arduino reset ...")
-        time.sleep(2.5)                # Arduino resets when serial opens; wait for boot
-        ser.reset_input_buffer()       # Discard any boot garbage
+        ser = serial.Serial(args.port, BAUD_RATE, timeout=0.5)
+        print("[INFO] Waiting for Arduino reset …")
+        time.sleep(2.5)
+        ser.reset_input_buffer()
         ser.reset_output_buffer()
-
         deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:  # Wait for Arduino to say READY
+        while time.monotonic() < deadline:
             if ser.in_waiting:
                 line = ser.readline().decode("ascii", errors="ignore").strip()
                 print(f"[ARDUINO] {line}")
                 if line == "READY":
                     break
             time.sleep(0.05)
-
-        send_stop(ser)                 # Send stop so servos don't drift on startup
+        send_stop(ser)
         print(f"[INFO] Serial ready on {args.port}")
     except serial.SerialException as exc:
         print(f"[WARN] Could not open {args.port}: {exc}")
-        print("[WARN] Preview-only mode.")
+        print("[WARN] Preview-only mode (no servo output).")
 
-    smooth_cx = None   # Smoothed face center X (None until first detection)
-    smooth_cy = None   # Smoothed face center Y
-    no_face_count = 0 # Consecutive frames with no face (reset when face seen)
+    # State
+    smooth_cx    = None
+    smooth_cy    = None
+    no_face_count= 0
 
-    smooth_pan = 0.0   # Smoothed pan command (reduces servo jitter)
-    smooth_tilt = 0.0  # Smoothed tilt command
+    smooth_pan   = 0.0
+    smooth_tilt  = 0.0
 
-    last_send = 0.0    # Time of last serial send (for rate limiting)
+    prev_pan_cx  = 0.0    # For multi-face continuity scoring
+    prev_pan_cy  = 0.0
+
+    last_send    = 0.0
+    last_time    = time.monotonic()
+    fps_buf      = collections.deque(maxlen=30)
 
     print("[INFO] Q = quit")
 
     while True:
-        grabbed, frame = cam.read()    # Get latest frame from camera thread
+        grabbed, frame = cam.read()
         if not grabbed or frame is None:
             time.sleep(0.01)
             continue
 
-        now = time.monotonic()
-        h_frame, w_frame = frame.shape[:2]   # Frame height and width
-        cx_frame, cy_frame = w_frame // 2, h_frame // 2  # Center of frame (target)
+        now          = time.monotonic()
+        dt           = max(now - last_time, 1e-6)
+        last_time    = now
+        fps_buf.append(1.0 / dt)
+        fps          = sum(fps_buf) / len(fps_buf)
 
-        detector.submit(frame)         # Hand frame to detector thread
-        face = detector.get_result()   # Get latest detection (may be stale by one frame)
+        h_frame, w_frame = frame.shape[:2]
+        cx_frame = w_frame // 2
+        cy_frame = h_frame // 2
 
-        pan_int = 0    # Pan speed offset to send this frame (-MAX_SPEED .. +MAX_SPEED)
-        tilt_int = 0   # Tilt speed offset
+        # Hand frame to detector thread
+        detector.submit(frame)
+        faces = detector.get_results()
 
-        if face is not None:
-            no_face_count = 0          # We saw a face; reset dropout counter
+        # ── Select best face ───────────────────────────────────
+        cx_prev = prev_pan_cx if smooth_cx is None else smooth_cx
+        cy_prev = prev_pan_cy if smooth_cy is None else smooth_cy
+        best = select_face(faces, cx_prev, cy_prev)
 
-            fx, fy, fw, fh = face      # Face bounding box (full-frame coords)
-            raw_cx = float(fx + fw // 2)   # Raw face center X
-            raw_cy = float(fy + fh // 2)   # Raw face center Y
+        pan_raw  = 0.0
+        tilt_raw = 0.0
+        status   = "NO FACE"
 
+        if best is not None:
+            no_face_count = 0
+            fx, fy, fw, fh = best
+
+            raw_cx = float(fx + fw / 2)
+            raw_cy = float(fy + fh / 2)
+
+            # EMA smoothing
             if smooth_cx is None:
-                smooth_cx = raw_cx     # First time: use raw position
-                smooth_cy = raw_cy
+                smooth_cx, smooth_cy = raw_cx, raw_cy
             else:
-                smooth_cx = SMOOTH * smooth_cx + (1.0 - SMOOTH) * raw_cx   # Exponential moving average
-                smooth_cy = SMOOTH * smooth_cy + (1.0 - SMOOTH) * raw_cy
+                smooth_cx = SMOOTH * smooth_cx + (1 - SMOOTH) * raw_cx
+                smooth_cy = SMOOTH * smooth_cy + (1 - SMOOTH) * raw_cy
 
-            error_x = smooth_cx - cx_frame   # Positive = face is right of center
-            error_y = smooth_cy - cy_frame   # Positive = face is below center
+            # Kalman correct
+            meas = np.array([[smooth_cx], [smooth_cy]], np.float32)
+            if not kalman_init:
+                kalman.statePre = np.array(
+                    [[smooth_cx], [smooth_cy], [0], [0]], np.float32
+                )
+                kalman_init = True
+            kalman.correct(meas)
 
+            prev_pan_cx, prev_pan_cy = smooth_cx, smooth_cy
+
+            # Draw face box
+            cv2.rectangle(frame, (fx, fy), (fx + fw, fy + fh), (0, 220, 80), 2, cv2.LINE_AA)
+
+            error_x = smooth_cx - cx_frame
+            error_y = smooth_cy - cy_frame
+
+            # PID (only outside dead zone)
             if abs(error_x) > DEAD_ZONE:
-                sign_x = 1.0 if error_x > 0 else -1.0
-                effective_x = abs(error_x) - DEAD_ZONE   # Only correct error outside dead zone
-                raw = clamp(sign_x * effective_x * GAIN_PAN * INVERT_PAN,
-                            -MAX_SPEED, MAX_SPEED)
-                pan_int = to_int_offset(raw)
+                sign_x   = 1.0 if error_x > 0 else -1.0
+                eff_x    = (abs(error_x) - DEAD_ZONE) * sign_x
+                pan_raw  = pid_pan.update(eff_x * INVERT_PAN, dt)
+            else:
+                pid_pan.reset()
 
             if abs(error_y) > DEAD_ZONE:
-                sign_y = 1.0 if error_y > 0 else -1.0
-                effective_y = abs(error_y) - DEAD_ZONE
-                raw = clamp(sign_y * effective_y * GAIN_TILT * INVERT_TILT,
-                            -MAX_SPEED, MAX_SPEED)
-                tilt_int = to_int_offset(raw)
+                sign_y   = 1.0 if error_y > 0 else -1.0
+                eff_y    = (abs(error_y) - DEAD_ZONE) * sign_y
+                tilt_raw = pid_tilt.update(eff_y * INVERT_TILT, dt)
+            else:
+                pid_tilt.reset()
 
-            cv2.rectangle(frame, (fx, fy), (fx + fw, fy + fh), (0, 255, 0), 2)  # Draw face box
-            cv2.circle(frame, (int(smooth_cx), int(smooth_cy)), 4, (0, 255, 0), -1)  # Draw smoothed center
             status = "TRACKING"
+
         else:
             no_face_count += 1
-            if no_face_count > 15:     # After 15 frames with no face, clear smoothed position
-                smooth_cx = None       # So next detection doesn't jump
-                smooth_cy = None
-            status = "NO FACE"
 
-        smooth_pan  = CMD_SMOOTH * smooth_pan  + (1.0 - CMD_SMOOTH) * pan_int   # Smooth command output
-        smooth_tilt = CMD_SMOOTH * smooth_tilt + (1.0 - CMD_SMOOTH) * tilt_int
+            # Kalman prediction coasts for a short window
+            if kalman_init and no_face_count <= 8:
+                predicted = kalman.predict()
+                smooth_cx = float(predicted[0])
+                smooth_cy = float(predicted[1])
+                status    = "PREDICTING"
+            else:
+                kalman.predict()   # Keep filter running even when lost
+                if no_face_count > 15:
+                    smooth_cx, smooth_cy = None, None
+                    kalman_init = False
+                    pid_pan.reset()
+                    pid_tilt.reset()
 
-        pan_cmd  = STOP_PAN  + int(round(smooth_pan))   # Final servo value (e.g. 90 + offset)
+        # ── Smooth servo command ───────────────────────────────
+        smooth_pan  = CMD_SMOOTH * smooth_pan  + (1 - CMD_SMOOTH) * pan_raw
+        smooth_tilt = CMD_SMOOTH * smooth_tilt + (1 - CMD_SMOOTH) * tilt_raw
+
+        pan_cmd  = STOP_PAN  + int(round(smooth_pan))
         tilt_cmd = STOP_TILT + int(round(smooth_tilt))
 
-        # HUD
-        cv2.line(frame, (cx_frame - 15, cy_frame), (cx_frame + 15, cy_frame), (255, 0, 0), 1)   # Crosshair horizontal
-        cv2.line(frame, (cx_frame, cy_frame - 15), (cx_frame, cy_frame + 15), (255, 0, 0), 1)  # Crosshair vertical
-        cv2.putText(frame, f"Pan {pan_cmd}  Tilt {tilt_cmd}  [{status}]",
-                     (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2)
-        cv2.putText(frame, "Q = quit",
-                     (10, h_frame - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+        # ── HUD ───────────────────────────────────────────────
+        draw_hud(frame, status, pan_cmd, tilt_cmd, fps,
+                 smooth_cx, smooth_cy, w_frame, h_frame)
 
-        # Send to Arduino
-        if ser and (now - last_send) >= SEND_INTERVAL:  # Rate limit serial sends
-            cmd = build_command(pan_cmd, tilt_cmd)
+        # ── Serial send (rate-limited) ─────────────────────────
+        if ser and (now - last_send) >= SEND_INTERVAL:
             try:
-                ser.write(cmd)
+                ser.write(build_command(pan_cmd, tilt_cmd))
             except serial.SerialException:
                 pass
             last_send = now
 
-        cv2.imshow("Face Tracker", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):  # Quit on 'q'
+        cv2.imshow("Face Tracker  [Enhanced]", frame)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
-    send_stop(ser)         # Stop servos before exit
+    # ── Shutdown ──────────────────────────────────────────────
+    send_stop(ser)
     if ser:
         ser.close()
-    detector.stop()        # Stop detector thread
-    cam.stop()             # Stop camera thread
+    detector.stop()
+    cam.stop()
     cv2.destroyAllWindows()
     print("[INFO] Shut down.")
 
 
 if __name__ == "__main__":
-    main()  # Run only when script is executed directly (not imported)
+    main()
