@@ -159,9 +159,24 @@ class FaceDetector:
         self.scale = scale
         self._use_dnn = False
 
-        # Use Haar cascade (reliable, always works)
-        self._cascade = cv2.CascadeClassifier(HAAR_CASCADE)
-        print("[INFO] Using Haar cascade face detector.")
+        # Try DNN first
+        try:
+            self._net = cv2.dnn.readNetFromCaffe(DNN_CONFIG, DNN_MODEL)
+            # Smoke-test: a blank 300×300 blob
+            blob = cv2.dnn.blobFromImage(
+                np.zeros((300, 300, 3), np.uint8),
+                1.0,
+                (300, 300),
+                (104, 177, 123),
+                swapRB=False,
+            )
+            self._net.setInput(blob)
+            self._net.forward()
+            self._use_dnn = True
+            print("[INFO] DNN face detector loaded.")
+        except Exception as exc:
+            print(f"[WARN] DNN load failed ({exc}); falling back to Haar.")
+            self._cascade = cv2.CascadeClassifier(HAAR_CASCADE)
 
         # Low-light tools (used inside detector thread)
         self._clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=CLAHE_GRID)
@@ -253,7 +268,11 @@ class FaceDetector:
                 continue
 
             try:
-                faces = self._detect_haar(frame)
+                faces = (
+                    self._detect_dnn(frame)
+                    if self._use_dnn
+                    else self._detect_haar(frame)
+                )
             except Exception:
                 faces = []
 
