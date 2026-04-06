@@ -3,8 +3,7 @@ Face-Tracking Pan-Tilt Turret Controller  —  Enhanced Edition
 ==============================================================
 Improvements over v1:
   • DNN-based face detector  (res10_300x300_ssd — much better than Haar)
-  • Kalman filter            (smooth prediction; coasts when face is lost)
-  • Full PID controller      (eliminates overshoot / oscillation)
+  • Proportional control     (simple and effective gain-based control)
   • Multi-face scoring       (locks onto closest/largest face)
   • Low-light enhancement    (CLAHE + gamma LUT on detection crop)
   • Live FPS counter         (30-frame rolling average)
@@ -46,18 +45,18 @@ import serial
 # --- Servo / turret ---
 STOP_PAN = 90  # Neutral PWM value (continuous-rotation "stop")
 STOP_TILT = 90
-MAX_SPEED = 35  # Max offset from 90 → range 55..125
+MAX_SPEED = 20  # Max offset from 90
 INVERT_PAN = -1  # Flip left/right if turret moves wrong way
 INVERT_TILT = 1  # Flip up/down   if turret moves wrong way
-DEAD_ZONE = 35  # Pixel radius around centre with no correction
+DEAD_ZONE = 60 # Pixel radius around centre with no correction
 
-# --- PID (pan & tilt share structure, different gains) ---
-PAN_KP, PAN_KI, PAN_KD = 0.09, 0.0008, 0.025
-TILT_KP, TILT_KI, TILT_KD = 0.08, 0.0008, 0.020
+# --- Gain Control ---
+PAN_GAIN = 0.08
+TILT_GAIN = 0.05
 
 # --- Smoothing ---
-SMOOTH = 0.60  # Face-position EMA  (0=raw, 1=frozen)
-CMD_SMOOTH = 0.65  # Servo-command EMA  (reduces jitter)
+SMOOTH = 0.6  # Face-position EMA
+CMD_SMOOTH = 0.6  # Servo-command EMA (reduces jitter)
 
 # --- Detection ---
 DNN_CONF_THRESHOLD = 0.55  # Min confidence for DNN detections
@@ -71,7 +70,7 @@ CLAHE_GRID = (8, 8)  # CLAHE tile grid
 
 # --- Serial ---
 BAUD_RATE = 9600
-SEND_HZ = 30
+SEND_HZ = 10
 SEND_INTERVAL = 1.0 / SEND_HZ
 
 # --- Camera (USB) ---
@@ -85,51 +84,6 @@ DNN_CONFIG = "deploy.prototxt"
 
 # Fallback to Haar if DNN files not found
 HAAR_CASCADE = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-
-
-# ══════════════════════════════════════════════════════════════════
-#  PID Controller
-# ══════════════════════════════════════════════════════════════════
-class PID:
-    """Simple PID with integral wind-up clamp."""
-
-    def __init__(self, kp: float, ki: float, kd: float, limit: float):
-        self.kp, self.ki, self.kd = kp, ki, kd
-        self.limit = limit
-        self.integral = 0.0
-        self.prev_error = 0.0
-
-    def update(self, error: float, dt: float) -> float:
-        dt = max(dt, 1e-6)
-        self.integral = np.clip(self.integral + error * dt, -self.limit, self.limit)
-        derivative = (error - self.prev_error) / dt
-        self.prev_error = error
-        return float(
-            np.clip(
-                self.kp * error + self.ki * self.integral + self.kd * derivative,
-                -self.limit,
-                self.limit,
-            )
-        )
-
-    def reset(self):
-        self.integral = 0.0
-        self.prev_error = 0.0
-
-
-# ══════════════════════════════════════════════════════════════════
-#  Kalman filter (2-D position + velocity)
-# ══════════════════════════════════════════════════════════════════
-def make_kalman() -> cv2.KalmanFilter:
-    kf = cv2.KalmanFilter(4, 2)
-    kf.measurementMatrix = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], np.float32)
-    kf.transitionMatrix = np.array(
-        [[1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]], np.float32
-    )
-    kf.processNoiseCov = np.eye(4, dtype=np.float32) * 0.03
-    kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5
-    kf.errorCovPost = np.eye(4, dtype=np.float32)
-    return kf
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -408,7 +362,7 @@ def draw_hud(
     cv2.line(frame, (cx, cy - arm), (cx, cy + arm), (220, 220, 0), 1, cv2.LINE_AA)
     cv2.circle(frame, (cx, cy), radius, (220, 220, 0), 1, cv2.LINE_AA)
 
-    # Draw Kalman-predicted dot (only when tracking)
+    # Draw tracking position dot (only when tracking)
     if tracking and smooth_cx is not None:
         cv2.circle(frame, (int(smooth_cx), int(smooth_cy)), 5, color, -1, cv2.LINE_AA)
 
@@ -428,11 +382,6 @@ def main():
     print(f"[INFO] Opening camera {args.camera} ...")
     cam = CameraStream(src=args.camera)
     detector = FaceDetector(scale=DETECTION_SCALE)
-
-    pid_pan = PID(PAN_KP, PAN_KI, PAN_KD, MAX_SPEED)
-    pid_tilt = PID(TILT_KP, TILT_KI, TILT_KD, MAX_SPEED)
-    kalman = make_kalman()
-    kalman_init = False  # True once we've done first correction
 
     # Serial
     ser = None
@@ -480,7 +429,9 @@ def main():
             continue
 
         now = time.monotonic()
-        dt = max(now - last_time, 1e-6)
+        dt = now - last_time
+        if dt < 0.01:
+            dt = 0.01
         last_time = now
         fps_buf.append(1.0 / dt)
         fps = sum(fps_buf) / len(fps_buf)
@@ -509,22 +460,12 @@ def main():
             raw_cx = float(fx + fw / 2)
             raw_cy = float(fy + fh / 2)
 
-            # EMA smoothing
+            # EMA smoothing on position
             if smooth_cx is None:
                 smooth_cx, smooth_cy = raw_cx, raw_cy
             else:
                 smooth_cx = SMOOTH * smooth_cx + (1 - SMOOTH) * raw_cx
                 smooth_cy = SMOOTH * smooth_cy + (1 - SMOOTH) * raw_cy
-
-            # Kalman correct
-            meas = np.array([[smooth_cx], [smooth_cy]], np.float32)
-            if not kalman_init:
-                kalman.statePre = np.array(
-                    [[smooth_cx], [smooth_cy], [0], [0]], np.float32
-                )
-                kalman_init = True
-            kalman.correct(meas)
-
             prev_pan_cx, prev_pan_cy = smooth_cx, smooth_cy
 
             # Draw face box
@@ -535,39 +476,24 @@ def main():
             error_x = smooth_cx - cx_frame
             error_y = smooth_cy - cy_frame
 
-            # PID (only outside dead zone)
+            # Proportional Control (only outside dead zone)
             if abs(error_x) > DEAD_ZONE:
-                sign_x = 1.0 if error_x > 0 else -1.0
-                eff_x = (abs(error_x) - DEAD_ZONE) * sign_x
-                pan_raw = pid_pan.update(eff_x * INVERT_PAN, dt)
+                pan_raw = clamp(error_x * PAN_GAIN * INVERT_PAN, -MAX_SPEED, MAX_SPEED)
             else:
-                pid_pan.reset()
+                pan_raw = 0.0
 
             if abs(error_y) > DEAD_ZONE:
-                sign_y = 1.0 if error_y > 0 else -1.0
-                eff_y = (abs(error_y) - DEAD_ZONE) * sign_y
-                tilt_raw = pid_tilt.update(eff_y * INVERT_TILT, dt)
+                tilt_raw = clamp(error_y * TILT_GAIN * INVERT_TILT, -MAX_SPEED, MAX_SPEED)
+                tilt_raw = tilt_raw * 0.6  # Reduce vertical overshoot
             else:
-                pid_tilt.reset()
+                tilt_raw = 0.0
 
             status = "TRACKING"
 
         else:
             no_face_count += 1
-
-            # Kalman prediction coasts for a short window
-            if kalman_init and no_face_count <= 8:
-                predicted = kalman.predict()
-                smooth_cx = float(predicted[0, 0])
-                smooth_cy = float(predicted[1, 0])
-                status = "PREDICTING"
-            else:
-                kalman.predict()  # Keep filter running even when lost
-                if no_face_count > 15:
-                    smooth_cx, smooth_cy = None, None
-                    kalman_init = False
-                    pid_pan.reset()
-                    pid_tilt.reset()
+            if no_face_count > 15:
+                smooth_cx, smooth_cy = None, None
 
         # ── Smooth servo command ───────────────────────────────
         smooth_pan = CMD_SMOOTH * smooth_pan + (1 - CMD_SMOOTH) * pan_raw
@@ -591,15 +517,18 @@ def main():
 
         # ── Serial send (rate-limited) ─────────────────────────
         if ser and (now - last_send) >= SEND_INTERVAL:
-            try:
-                ser.write(build_command(pan_cmd, tilt_cmd))
-            except serial.SerialException:
-                pass
+            if abs(pan_cmd - STOP_PAN) > 2 or abs(tilt_cmd - STOP_TILT) > 2:
+                try:
+                    ser.write(build_command(pan_cmd, tilt_cmd))
+                except serial.SerialException:
+                    pass
             last_send = now
 
         cv2.imshow("Face Tracker  [Enhanced]", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
+
+        time.sleep(0.01)
 
     # ── Shutdown ──────────────────────────────────────────────
     send_stop(ser)
