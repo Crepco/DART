@@ -1,10 +1,11 @@
 /*
- * Face-Tracking Turret – Arduino Controller (STABLE VERSION)
+ * Face-Tracking Turret – Arduino Controller (ZERO LATENCY)
  * ==========================================================
- * Improvements:
- *   • Deadband → ignores tiny jitter
- *   • Smoothing → smooth servo motion
- *   • Stable stop (no micro-movement near 90)
+ * Updated to work with the Python PID controller. 
+ * All smoothing, deadbands, and logic are handled by Python.
+ * This Arduino simply executes commands as fast as possible.
+ * * Hardware Safety: Includes hardware-level bounds checking
+ * to protect against corrupted serial packets.
  */
 
 #include <Servo.h>
@@ -14,10 +15,10 @@
 #define STOP_TILT 90
 
 // ── Speed cap ──────────────────────
-#define MAX_SPEED 35
+#define MAX_SPEED 35 // Max offset from 90 (Range: 55 to 125)
 
 // ── Timeout ────────────────────────
-#define TIMEOUT_MS 400 // increased for stability
+#define TIMEOUT_MS 400 // Stops motors if Python crashes or disconnects
 
 // ── Pins ───────────────────────────
 #define TILT_PIN 9
@@ -27,30 +28,13 @@
 Servo panServo;
 Servo tiltServo;
 
-// Current values
-float lastPan = STOP_PAN;
-float lastTilt = STOP_TILT;
-
-int panSpeed;
-int tiltSpeed;
-
 char buf[32];
 uint8_t bufIdx = 0;
 unsigned long lastCmdTime = 0;
 
 // ───────────────────────────────────
-int clampSpeed(int v, int center)
-{
-    int lo = center - MAX_SPEED;
-    int hi = center + MAX_SPEED;
-    return constrain(v, lo, hi);
-}
-
-// ───────────────────────────────────
 void stopAll()
 {
-    lastPan = STOP_PAN;
-    lastTilt = STOP_TILT;
     panServo.write(STOP_PAN);
     tiltServo.write(STOP_TILT);
 }
@@ -59,8 +43,11 @@ void stopAll()
 void setup()
 {
     pinMode(LED_PIN, OUTPUT);
-    Serial.begin(9600);
+    
+    // MATCHES PYTHON SCRIPT FOR LOW LATENCY
+    Serial.begin(115200); 
 
+    // Clear any junk in the serial buffer
     while (Serial.available())
         Serial.read();
 
@@ -122,47 +109,14 @@ void parseCommand(const char *cmd)
     int p = atoi(cmd + 1);
     int t = atoi(tPtr + 1);
 
-    p = clampSpeed(p, STOP_PAN);
-    t = clampSpeed(t, STOP_TILT);
+    // ── Safety clamp ──────────────────────────────
+    // Python already clamps, but this protects the 
+    // servos if a corrupted packet slips through.
+    p = constrain(p, STOP_PAN - MAX_SPEED, STOP_PAN + MAX_SPEED);
+    t = constrain(t, STOP_TILT - MAX_SPEED, STOP_TILT + MAX_SPEED);
 
-    panSpeed = p;
-    tiltSpeed = t;
-
-    applySmoothMovement();
+    panServo.write(p);
+    tiltServo.write(t);
 
     lastCmdTime = millis();
-}
-
-// ───────────────────────────────────
-void applySmoothMovement()
-{
-    int targetPan = clampSpeed(panSpeed, STOP_PAN);
-    int targetTilt = clampSpeed(tiltSpeed, STOP_TILT);
-
-    // 🔥 EMA smoothing (adjust 0.2 → smoother/slower)
-    lastPan = 0.8 * lastPan + 0.2 * targetPan;
-    lastTilt = 0.8 * lastTilt + 0.2 * targetTilt;
-
-    // Deadband near stop (VERY IMPORTANT)
-    if (abs(targetPan - STOP_PAN) < 3)
-        targetPan = STOP_PAN;
-    if (abs(targetTilt - STOP_TILT) < 3)
-        targetTilt = STOP_TILT;
-
-    // Limit step size (prevents sudden jumps)
-    int maxStep = 3;
-
-    if (targetPan > lastPan)
-        lastPan += min(maxStep, targetPan - lastPan);
-    else
-        lastPan -= min(maxStep, lastPan - targetPan);
-
-    if (targetTilt > lastTilt)
-        lastTilt += min(maxStep, targetTilt - lastTilt);
-    else
-        lastTilt -= min(maxStep, lastTilt - targetTilt);
-
-    // Write to servo
-    panServo.write(lastPan);
-    tiltServo.write(lastTilt);
 }
