@@ -3,8 +3,7 @@ Face-Tracking Pan-Tilt Turret Controller
 =========================================
 For CONTINUOUS ROTATION (360 deg) MG996R servos.
 
-Pin 9  = TILT (up/down)
-Pin 10 = PAN  (left/right)
+Arduino pins (see arduino_servo_controller.ino): Pan 8, Tilt1+Tilt2 9+10 (same command), Shoot 11.
 
 When no face is detected the servos stop (hold position).
 
@@ -33,7 +32,7 @@ GAIN_TILT = 0.09  # How much tilt speed per pixel of vertical error (after dead 
 DEAD_ZONE = 40   # Pixels from center: no correction inside this; reduces jitter
 
 INVERT_PAN  = -1  # Multiply pan command by this (use -1 to reverse left/right)
-INVERT_TILT = 1   # Multiply tilt command by this (use -1 to reverse up/down)
+INVERT_TILT = -1  # Multiply tilt command by this (use -1 to reverse up/down)
 
 SMOOTH = 0.65  # Face position smoothing (0..1); higher = smoother but laggier
 
@@ -160,16 +159,17 @@ def to_int_offset(raw_offset):
     return int(round(raw_offset))  # Convert float speed offset to integer for serial
 
 
-def build_command(pan_speed: int, tilt_speed: int) -> bytes:
+def build_command(pan_speed: int, tilt_speed: int, shoot: int) -> bytes:
     p = clamp(pan_speed, STOP_PAN - MAX_SPEED, STOP_PAN + MAX_SPEED)   # Keep in safe range
     t = clamp(tilt_speed, STOP_TILT - MAX_SPEED, STOP_TILT + MAX_SPEED)
-    return f"P{p:03d}T{t:03d}\n".encode("ascii")  # e.g. P090T085\n
+    s = 1 if shoot else 0
+    return f"P{p:03d}T{t:03d}S{s:03d}\n".encode("ascii")  # e.g. P090T085S001\n
 
 
 def send_stop(ser):
     if ser:
         try:
-            ser.write(build_command(STOP_PAN, STOP_TILT))  # Send 90,90 to stop both servos
+            ser.write(build_command(STOP_PAN, STOP_TILT, 0))  # Stop pan/tilt and release shoot
         except serial.SerialException:
             pass
 
@@ -236,9 +236,11 @@ def main():
 
         pan_int = 0    # Pan speed offset to send this frame (-MAX_SPEED .. +MAX_SPEED)
         tilt_int = 0   # Tilt speed offset
+        shoot = 0      # 1 when target in sight, else 0
 
         if face is not None:
             no_face_count = 0          # We saw a face; reset dropout counter
+            shoot = 1
 
             fx, fy, fw, fh = face      # Face bounding box (full-frame coords)
             raw_cx = float(fx + fw // 2)   # Raw face center X
@@ -294,7 +296,7 @@ def main():
 
         # Send to Arduino
         if ser and (now - last_send) >= SEND_INTERVAL:  # Rate limit serial sends
-            cmd = build_command(pan_cmd, tilt_cmd)
+            cmd = build_command(pan_cmd, tilt_cmd, shoot)
             try:
                 ser.write(cmd)
             except serial.SerialException:
