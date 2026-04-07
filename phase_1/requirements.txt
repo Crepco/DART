@@ -1,9 +1,7 @@
-# ── Core ────────────────────────────────────────────────────────
 opencv-python>=4.8.0
 numpy>=1.24.0
 pyserial>=3.5
- 
-# ── Face recognition ────────────────────────────────────────────
+mediapipe==0.10.9
 cmake>=3.25.0
 dlib>=19.24.0
-face_recognition>=1.3.0
+#face_recognition>=1.3.0

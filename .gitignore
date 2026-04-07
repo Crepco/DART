@@ -1,0 +1,42 @@
+# ── Python ──────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environment ──────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── IDE ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.code-workspace
+
+# ── OS ───────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── ML Models (large binary files) ──────────────────────────────
+*.caffemodel
+*.pb
+*.pt
+*.pth
+*.onnx
+*.weights
+
+# ── Known faces (privacy) ────────────────────────────────────────
+known_faces/
+
+# ── Logs & temp ──────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak

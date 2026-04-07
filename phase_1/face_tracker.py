@@ -261,10 +261,8 @@ def select_face(faces: list, prev_cx: float, prev_cy: float):
 # ══════════════════════════════════════════════════════════════════
 class CameraStream:
     def __init__(self, src: int = 1):
-        # Use DirectShow on Windows for lower latency; auto-detect on Linux
-        backend = cv2.CAP_DSHOW if cv2.CAP_DSHOW else 0
-        self.cap = cv2.VideoCapture(src, backend)
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        # Auto-detect backend (CAP_ANY) to avoid black screen issues with DSHOW
+        self.cap = cv2.VideoCapture(src)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
         self.cap.set(cv2.CAP_PROP_FPS, CAM_FPS)

@@ -402,9 +402,8 @@ def select_target(faces, labels, prev_cx, prev_cy):
 # ══════════════════════════════════════════════════════════════════
 class CameraStream:
     def __init__(self, src=1):
-        backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else 0
-        self.cap = cv2.VideoCapture(src, backend)
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        # Auto-detect backend to avoid black screen issues with DSHOW
+        self.cap = cv2.VideoCapture(src)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
         self.cap.set(cv2.CAP_PROP_FPS,          CAM_FPS)
