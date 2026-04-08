@@ -1,6 +1,6 @@
 #include <Servo.h>
 
-// ── Stop values (tune if drifting) ──
+// ── Stop values ──
 #define STOP_PAN    90
 #define STOP_TILT   90
 
@@ -13,45 +13,42 @@
 // ── Pins ──
 #define TILT_PIN    9
 #define PAN_PIN     10
-#define TRIGGER_PIN 11
+#define TRIGGER_PIN 8
 #define LED_PIN     13
 
-// ── Trigger tuning ──
-// If your trigger servo is continuous rotation, 90 is STOP.
-// If it is positional, set TRIGGER_STOP_ANGLE to your safe "rest" angle.
-#define TRIGGER_STOP_ANGLE  90
-#define TRIGGER_FIRE_DELTA  5        // how far from stop/rest to drive when firing
-#define TRIGGER_MAX_FIRE_MS 4000UL   // max fire time per burst
+// ── MG996R Trigger Settings ──
+#define TRIGGER_REST_ANGLE  60
+#define TRIGGER_FIRE_ANGLE  120
 
 Servo panServo;
 Servo tiltServo;
 Servo triggerServo;
 
-int panSpeed;
-int tiltSpeed;
-
+// ── State ──
 bool fireRequested = false;
-bool firingActive = false;
-unsigned long firingStartMs = 0;
-bool fireLatch = false; // require F0 before next burst
+bool lastFireState = false;
 
-char buf[32];
-uint8_t bufIdx = 0;
 unsigned long lastCmdTime = 0;
 
-// ── Clamp speed ──
+// ── Serial buffer ──
+char buf[32];
+uint8_t bufIdx = 0;
+
+// ── Clamp function ──
 int clampSpeed(int v, int center) {
     return constrain(v, center - MAX_SPEED, center + MAX_SPEED);
 }
 
-// ── Stop everything ──
+// ── Stop all safely ──
 void stopAll() {
     panServo.write(STOP_PAN);
     tiltServo.write(STOP_TILT);
-    triggerServo.write(TRIGGER_STOP_ANGLE);
+
+    // Always reset trigger
+    triggerServo.write(TRIGGER_REST_ANGLE);
+
     fireRequested = false;
-    firingActive = false;
-    fireLatch = false;
+    lastFireState = false;
 }
 
 // ── Setup ──
@@ -66,6 +63,7 @@ void setup() {
     stopAll();
     delay(500);
 
+    // Startup blink
     digitalWrite(LED_PIN, HIGH);
     delay(300);
     digitalWrite(LED_PIN, LOW);
@@ -77,9 +75,9 @@ void setup() {
 // ── Loop ──
 void loop() {
 
-    // Read serial
+    // 1. Serial read
     while (Serial.available()) {
-        char c = (char)Serial.read();
+        char c = Serial.read();
 
         if (c == '\n') {
             buf[bufIdx] = '\0';
@@ -94,39 +92,25 @@ void loop() {
         }
     }
 
-    // Timeout safety
+    // 2. Timeout safety
     if (millis() - lastCmdTime > TIMEOUT_MS) {
         stopAll();
     }
 
-    // ── Trigger logic ──
-    // - If no face / off-crosshair (F0): stop trigger immediately and re-arm.
-    // - If on-crosshair (F1): fire up to MAX time, then stop until F0 happens.
-    if (!fireRequested) {
-        firingActive = false;
-        fireLatch = false;
-        triggerServo.write(TRIGGER_STOP_ANGLE);
-    } else {
-        if (!firingActive && !fireLatch) {
-            firingActive = true;
-            firingStartMs = millis();
-        }
-
-        if (firingActive) {
-            triggerServo.write(TRIGGER_STOP_ANGLE + TRIGGER_FIRE_DELTA);
-            if (millis() - firingStartMs >= TRIGGER_MAX_FIRE_MS) {
-                firingActive = false;
-                fireLatch = true;
-                triggerServo.write(TRIGGER_STOP_ANGLE);
-            }
+    // 3. Trigger logic (state change only)
+    if (fireRequested != lastFireState) {
+        if (fireRequested) {
+            triggerServo.write(TRIGGER_FIRE_ANGLE);   // HOLD trigger
         } else {
-            triggerServo.write(TRIGGER_STOP_ANGLE);
+            triggerServo.write(TRIGGER_REST_ANGLE);   // RELEASE trigger
         }
+        lastFireState = fireRequested;
     }
 }
 
-// ── Parse command ──
+// ── Parse incoming command ──
 void parseCommand(const char* cmd) {
+
     if (cmd[0] != 'P') return;
 
     const char* tPtr = strchr(cmd, 'T');
@@ -135,21 +119,16 @@ void parseCommand(const char* cmd) {
     int p = atoi(cmd + 1);
     int t = atoi(tPtr + 1);
 
-    p = clampSpeed(p, STOP_PAN);
-    t = clampSpeed(t, STOP_TILT);
+    // Apply limits
+    panServo.write(clampSpeed(p, STOP_PAN));
+    tiltServo.write(clampSpeed(t, STOP_TILT));
 
-    panSpeed = p;
-    tiltSpeed = t;
-
-    panServo.write(panSpeed);
-    tiltServo.write(tiltSpeed);
-
-    // Fire flag
+    // 🔥 SAFE FIRE PARSE (IMPORTANT FIX)
     const char* fPtr = strchr(cmd, 'F');
     if (fPtr && (fPtr[1] == '0' || fPtr[1] == '1')) {
         fireRequested = (fPtr[1] == '1');
     } else {
-        fireRequested = false;
+        fireRequested = false;   // FORCE RESET if missing
     }
 
     lastCmdTime = millis();
