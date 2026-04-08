@@ -1,0 +1,2 @@
+0 Authorized
+1 Unauthorized
