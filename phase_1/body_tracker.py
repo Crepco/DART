@@ -1,170 +1,95 @@
-"""
-DART — Body-Tracking Pan-Tilt Turret
-=====================================
-Working base (CAM_INDEX=0, 640×480) + Anti-Overshoot PID upgrades:
-
-  ✅ Threaded camera      — no frame drops blocking main loop
-  ✅ Threaded pose        — MediaPipe runs in background, never stalls display
-  ✅ Continuous PID       — D term sees full error curve, generates braking force
-  ✅ Output dead band     — kills servo buzz without starving D term
-  ✅ Instant brake        — bypasses EMA when output=0, no coasting past centre
-  ✅ EMA smoothing        — on body centroid position AND servo command
-  ✅ Integral wind-up     — clamped to MAX_SPEED
-  ✅ HUD                  — landmarks, face box, centroid, error, status bar
-
-Hardware
---------
-  Pin 9  = TILT  (up/down)
-  Pin 10 = PAN   (left/right)
-  Continuous-rotation MG996R servos
-
-Usage
------
-  python body_tracker.py [--camera N] [--port PORT]
-
-Install
--------
-  pip install mediapipe==0.10.9 opencv-python pyserial numpy
-"""
+import os
+# Silences TensorFlow/MediaPipe startup logs for a clean terminal
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 
 import argparse
 import threading
 import time
-
 import cv2
 import mediapipe as mp
 import numpy as np
 import serial
-
 
 # ══════════════════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════════════════
 
 # --- Camera ---
-CAM_INDEX  = 0          # ✅ proven to work — override with --camera
+CAM_INDEX  = 0
 CAM_WIDTH  = 640
 CAM_HEIGHT = 480
 CAM_FPS    = 15
 
-# --- Servo ---
-STOP_PAN   = 90         # Continuous-rotation neutral
+# --- Servo / Hardware ---
+STOP_PAN   = 90
 STOP_TILT  = 90
-MAX_SPEED  = 35         # Max offset from 90 (range 55..125)
-INVERT_PAN  = -1        # Flip sign if turret pans the wrong way
-INVERT_TILT =  1        # Flip sign if turret tilts the wrong way
+MAX_SPEED  = 35
+INVERT_PAN  = -1
+INVERT_TILT = 1
 
-# --- Output dead band ---
-# PID outputs smaller than this are forced to 0.
-# Stops servo buzzing on tiny corrections without killing D term.
-OUTPUT_DEADBAND = 3     # same units as servo offset / MAX_SPEED
-
-# --- PID gains (heavy-braking profile) ---
-#
-#   Still overshoots?     → raise KD  (try 0.12, 0.15)
-#   Oscillates?           → lower KP  (try 0.03, 0.02)
-#   Too slow to centre?   → raise KP  (try 0.05, 0.06)
-#   Drifts when stationary? raise KI  (try 0.002, 0.005)
-#   Buzzing at centre?    → raise OUTPUT_DEADBAND (try 4, 5)
-#
+# --- PID & Movement ---
+OUTPUT_DEADBAND = 3
 PAN_KP,  PAN_KI,  PAN_KD  = 0.04, 0.001, 0.10
 TILT_KP, TILT_KI, TILT_KD = 0.04, 0.001, 0.09
 
-# --- Smoothing ---
-SMOOTH     = 0.65       # Body centroid position EMA (higher = smoother)
-CMD_SMOOTH = 0.70       # Servo command EMA (applied only when output != 0)
+SMOOTH     = 0.65 # Centroid EMA
+CMD_SMOOTH = 0.70 # Servo CMD EMA
 
-# --- Serial ---
+# --- Communication ---
 PORT      = "COM3"
-BAUD_RATE = 115200      # !! Arduino sketch must also use Serial.begin(115200) !!
-
-# --- Serial rate limiter ---
-SEND_HZ       = 30
+BAUD_RATE = 115200
+SEND_HZ   = 30
 SEND_INTERVAL = 1.0 / SEND_HZ
 
-# --- MediaPipe ---
-USE_LANDMARKS            = list(range(33))   # all 33 body landmarks
-FACE_LANDMARK_IDS        = list(range(11))   # indices 0-10 are face region
-MIN_DETECTION_CONFIDENCE = 0.5
-MIN_TRACKING_CONFIDENCE  = 0.5
-VISIBILITY_THRESHOLD     = 0.5
-
-# --- HUD colours (BGR) ---
-COL_TRACKING = (0, 220,  80)
-COL_NO_BODY  = (0,  60, 220)
-COL_RETICLE  = (220, 220,  0)
+# --- MediaPipe / HUD ---
+FACE_IDS = list(range(11))
+VISIBILITY_THRESHOLD = 0.5
+COL_TRACKING = (0, 220, 80)
+COL_NO_BODY  = (0, 60, 220)
+COL_RETICLE  = (220, 220, 0)
 COL_LANDMARK = (0, 200, 255)
 COL_CENTROID = (0, 255, 255)
-COL_FACE_BOX = (0, 220,  80)
-
+COL_FACE_BOX = (0, 220, 80)
 
 # ══════════════════════════════════════════════════════════════════
-#  PID Controller
+#  CORE CLASSES
 # ══════════════════════════════════════════════════════════════════
+
 class PID:
-    """
-    Continuous PID with integral wind-up clamp.
-
-    No input dead zone — D term runs on the full error curve so it
-    can generate braking force as the target approaches centre.
-    Dead-banding is applied to the OUTPUT, not the input.
-    """
-
-    def __init__(self, kp: float, ki: float, kd: float, limit: float):
+    def __init__(self, kp, ki, kd, limit):
         self.kp, self.ki, self.kd = kp, ki, kd
-        self.limit      = limit
-        self.integral   = 0.0
+        self.limit = limit
+        self.integral = 0.0
         self.prev_error = 0.0
 
-    def update(self, error: float, dt: float) -> float:
+    def update(self, error, dt):
         dt = max(dt, 1e-6)
-
-        # Integral with wind-up clamp
-        self.integral = float(np.clip(
-            self.integral + error * dt,
-            -self.limit, self.limit
-        ))
-
-        derivative      = (error - self.prev_error) / dt
+        # Integral wind-up clamp
+        self.integral = float(np.clip(self.integral + error * dt, -self.limit, self.limit))
+        derivative = (error - self.prev_error) / dt
         self.prev_error = error
-
-        raw = (self.kp * error
-               + self.ki * self.integral
-               + self.kd * derivative)
-
+        raw = (self.kp * error + self.ki * self.integral + self.kd * derivative)
         return float(np.clip(raw, -self.limit, self.limit))
 
     def reset(self):
-        """Call only when tracking is fully lost."""
-        self.integral   = 0.0
+        self.integral = 0.0
         self.prev_error = 0.0
 
-
-# ══════════════════════════════════════════════════════════════════
-#  Threaded Camera Stream
-# ══════════════════════════════════════════════════════════════════
 class CameraStream:
-    """
-    Reads frames in a background thread so the main loop
-    never blocks waiting for cap.read().
-    """
-
-    def __init__(self, src: int = 0):
-        self.cap = cv2.VideoCapture(src)
-
+    def __init__(self, src=0):
+        # CAP_DSHOW prevents most Windows-related freezes
+        self.cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)
         if not self.cap.isOpened():
-            raise RuntimeError(f"❌ Camera index {src} not available. "
-                               "Try --camera 0 or --camera 1")
-
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_WIDTH)
+            raise RuntimeError(f"❌ Camera {src} failed.")
+        
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
-        self.cap.set(cv2.CAP_PROP_FPS,          CAM_FPS)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+        self.cap.set(cv2.CAP_PROP_FPS, CAM_FPS)
 
         self.grabbed, self.frame = self.cap.read()
-        self._lock    = threading.Lock()
+        self._lock = threading.Lock()
         self._stopped = False
-        self._thread  = threading.Thread(target=self._update, daemon=True)
+        self._thread = threading.Thread(target=self._update, daemon=True)
         self._thread.start()
 
     def _update(self):
@@ -172,6 +97,7 @@ class CameraStream:
             g, f = self.cap.read()
             with self._lock:
                 self.grabbed, self.frame = g, f
+            time.sleep(0.005) # Crucial sleep to prevent loop locking
 
     def read(self):
         with self._lock:
@@ -182,31 +108,19 @@ class CameraStream:
         self._thread.join()
         self.cap.release()
 
-
-# ══════════════════════════════════════════════════════════════════
-#  Threaded Pose Detector
-# ══════════════════════════════════════════════════════════════════
 class PoseDetector:
-    """
-    Runs MediaPipe Pose in a background thread so inference
-    never blocks the camera read or the HUD draw.
-
-    submit(frame)  → non-blocking frame hand-off
-    get_result()   → (cx, cy, [(x,y), ...]) or None
-    """
-
     def __init__(self):
-        self._lock      = threading.Lock()
-        self._frame     = None
+        self._lock = threading.Lock()
+        self._frame = None
         self._new_frame = False
-        self._result    = None
-        self._stopped   = False
-        self._thread    = threading.Thread(target=self._run, daemon=True)
+        self._result = None
+        self._stopped = False
+        self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def submit(self, frame):
         with self._lock:
-            self._frame     = frame
+            self._frame = frame
             self._new_frame = True
 
     def get_result(self):
@@ -218,12 +132,12 @@ class PoseDetector:
         self._thread.join()
 
     def _run(self):
+        # model_complexity=0 is the fastest for real-time tracking
         pose = mp.solutions.pose.Pose(
             static_image_mode=False,
-            model_complexity=1,
-            smooth_landmarks=True,
-            min_detection_confidence=MIN_DETECTION_CONFIDENCE,
-            min_tracking_confidence=MIN_TRACKING_CONFIDENCE,
+            model_complexity=0, 
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
         )
 
         while not self._stopped:
@@ -239,201 +153,94 @@ class PoseDetector:
                 continue
 
             h, w = frame.shape[:2]
-            rgb  = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            try:
-                results = pose.process(rgb)
-            except Exception:
-                with self._lock:
-                    self._result = None
-                continue
-
-            if not results.pose_landmarks:
-                with self._lock:
-                    self._result = None
-                continue
-
-            lm  = results.pose_landmarks.landmark
-            pts = []
-            for idx in USE_LANDMARKS:
-                p = lm[idx]
-                if p.visibility > VISIBILITY_THRESHOLD:
-                    pts.append((int(p.x * w), int(p.y * h)))
-
-            if not pts:
-                with self._lock:
-                    self._result = None
-                continue
-
-            cx = int(np.mean([p[0] for p in pts]))
-            cy = int(np.mean([p[1] for p in pts]))
-
-            with self._lock:
-                self._result = (cx, cy, pts)
-
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(rgb)
+            
+            if results.pose_landmarks:
+                lm = results.pose_landmarks.landmark
+                all_pts = [(int(p.x * w), int(p.y * h), p.visibility) for p in lm]
+                
+                # Tracking centroid uses all visible landmarks
+                track_pts = [(p[0], p[1]) for p in all_pts if p[2] > VISIBILITY_THRESHOLD]
+                
+                if track_pts:
+                    cx = int(np.mean([p[0] for p in track_pts]))
+                    cy = int(np.mean([p[1] for p in track_pts]))
+                    with self._lock:
+                        self._result = (cx, cy, all_pts)
+                else:
+                    with self._lock: self._result = None
+            else:
+                with self._lock: self._result = None
         pose.close()
 
-
 # ══════════════════════════════════════════════════════════════════
-#  Serial helpers
+#  HUD LOGIC
 # ══════════════════════════════════════════════════════════════════
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
 
-def build_command(pan: int, tilt: int) -> bytes:
-    p = clamp(pan,  STOP_PAN  - MAX_SPEED, STOP_PAN  + MAX_SPEED)
-    t = clamp(tilt, STOP_TILT - MAX_SPEED, STOP_TILT + MAX_SPEED)
-    return f"P{p:03d}T{t:03d}\n".encode("ascii")
-
-def send_stop(ser):
-    if ser:
-        try:
-            ser.write(build_command(STOP_PAN, STOP_TILT))
-        except serial.SerialException:
-            pass
-
-
-# ══════════════════════════════════════════════════════════════════
-#  Output dead band
-# ══════════════════════════════════════════════════════════════════
-def apply_output_deadband(value: float, band: float) -> float:
-    """
-    Force small PID outputs to exactly 0.0.
-    Stops servo buzzing without removing the D term's view of the
-    error slope.
-    """
-    return 0.0 if abs(value) < band else value
-
-
-# ══════════════════════════════════════════════════════════════════
-#  HUD
-# ══════════════════════════════════════════════════════════════════
-def draw_hud(frame, status, pan_cmd, tilt_cmd,
-             smooth_cx, smooth_cy, landmarks,
-             w_f, h_f, error_x, error_y):
-
-    tracking = (status == "TRACKING")
-    bar_col  = COL_TRACKING if tracking else COL_NO_BODY
+def draw_hud(frame, status, pan_cmd, tilt_cmd, smooth_cx, smooth_cy, landmarks, error_x, error_y):
+    h_f, w_f = frame.shape[:2]
     cx_f, cy_f = w_f // 2, h_f // 2
+    tracking = (status == "TRACKING")
+    bar_col = COL_TRACKING if tracking else COL_NO_BODY
 
-    # Body landmark dots
-    for (x, y) in landmarks:
-        cv2.circle(frame, (x, y), 3, COL_LANDMARK, -1, cv2.LINE_AA)
-
-    # Face bounding box
+    # 1. Landmark Dots
     if landmarks:
-        face_pts = [landmarks[i] for i in FACE_LANDMARK_IDS
-                    if i < len(landmarks)]
+        for x, y, vis in landmarks:
+            if vis > VISIBILITY_THRESHOLD:
+                cv2.circle(frame, (x, y), 2, COL_LANDMARK, -1)
+
+    # 2. Face Box
+    if landmarks:
+        face_pts = [landmarks[i] for i in FACE_IDS if landmarks[i][2] > VISIBILITY_THRESHOLD]
         if face_pts:
-            xs  = [p[0] for p in face_pts]
-            ys  = [p[1] for p in face_pts]
-            pad = 20
-            x1  = max(0,   min(xs) - pad)
-            y1  = max(0,   min(ys) - pad)
-            x2  = min(w_f, max(xs) + pad)
-            y2  = min(h_f, max(ys) + pad)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), COL_FACE_BOX, 2, cv2.LINE_AA)
-            cv2.putText(frame, "Face", (x1, y1 - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, COL_FACE_BOX, 1, cv2.LINE_AA)
+            xs, ys = [p[0] for p in face_pts], [p[1] for p in face_pts]
+            cv2.rectangle(frame, (min(xs)-20, min(ys)-20), (max(xs)+20, max(ys)+20), COL_FACE_BOX, 2)
 
-    # Smoothed centroid + line to frame centre
-    if smooth_cx is not None and tracking:
-        cv2.line(frame,
-                 (int(smooth_cx), int(smooth_cy)),
-                 (cx_f, cy_f), (80, 80, 80), 1, cv2.LINE_AA)
-        cv2.circle(frame, (int(smooth_cx), int(smooth_cy)),
-                   8, COL_CENTROID, -1, cv2.LINE_AA)
-        cv2.circle(frame, (int(smooth_cx), int(smooth_cy)),
-                   8, (0, 0, 0), 1, cv2.LINE_AA)
+    # 3. Target Line & Centroid
+    if tracking and smooth_cx is not None:
+        cv2.line(frame, (int(smooth_cx), int(smooth_cy)), (cx_f, cy_f), (100, 100, 100), 1)
+        cv2.circle(frame, (int(smooth_cx), int(smooth_cy)), 8, COL_CENTROID, -1)
 
-    # Semi-transparent status bar
+    # 4. Status Bar (Semi-Transparent)
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w_f, 40), (10, 10, 10), -1)
-    cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+    cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+    bar_text = f"[{status}]  Pan: {pan_cmd}  Tilt: {tilt_cmd}  Err: ({int(error_x)}, {int(error_y)})"
+    cv2.putText(frame, bar_text, (10, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.55, bar_col, 2)
 
-    bar_text = (f"[{status}]   Pan {pan_cmd:3d}  Tilt {tilt_cmd:3d}"
-                f"   Err ({int(error_x):+d}, {int(error_y):+d})")
-    cv2.putText(frame, bar_text, (10, 27),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, bar_col, 2, cv2.LINE_AA)
-
-    # Crosshair reticle
-    arm = 10 if tracking else 18
-    cv2.line(frame, (cx_f-arm, cy_f), (cx_f+arm, cy_f), COL_RETICLE, 1, cv2.LINE_AA)
-    cv2.line(frame, (cx_f, cy_f-arm), (cx_f, cy_f+arm), COL_RETICLE, 1, cv2.LINE_AA)
-    cv2.circle(frame, (cx_f, cy_f), arm + 8, COL_RETICLE, 1, cv2.LINE_AA)
-
-    # Dead band ring (visual reference)
-    cv2.circle(frame, (cx_f, cy_f), OUTPUT_DEADBAND * 12,
-               (50, 50, 50), 1, cv2.LINE_AA)
-
-    cv2.putText(frame, "Q = quit", (10, h_f - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (100, 100, 100), 1, cv2.LINE_AA)
-
+    # 5. Crosshair
+    arm = 12 if tracking else 20
+    cv2.line(frame, (cx_f-arm, cy_f), (cx_f+arm, cy_f), COL_RETICLE, 1)
+    cv2.line(frame, (cx_f, cy_f-arm), (cx_f, cy_f+arm), COL_RETICLE, 1)
 
 # ══════════════════════════════════════════════════════════════════
-#  Main
+#  MAIN LOOP
 # ══════════════════════════════════════════════════════════════════
+
 def main():
-    parser = argparse.ArgumentParser(description="DART body tracker — anti-overshoot PID")
-    parser.add_argument("--camera", type=int, default=CAM_INDEX, help="Camera index (default 0)")
-    parser.add_argument("--port",   type=str, default=PORT,      help="Serial port (default COM3)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--camera", type=int, default=CAM_INDEX)
+    parser.add_argument("--port", type=str, default=PORT)
     args = parser.parse_args()
 
-    # ── Camera ────────────────────────────────────────────────────
-    print(f"[INFO] Opening camera {args.camera} ...")
     cam = CameraStream(src=args.camera)
-
-    # Quick sanity check
-    grabbed, test_frame = cam.read()
-    if not grabbed or test_frame is None:
-        raise RuntimeError("❌ Camera opened but returned no frame. "
-                           "Try a different --camera index.")
-    print(f"[INFO] Camera OK — {test_frame.shape[1]}×{test_frame.shape[0]}")
-
-    # ── Pose detector ─────────────────────────────────────────────
     detector = PoseDetector()
-
-    # ── PID controllers ───────────────────────────────────────────
-    pid_pan  = PID(PAN_KP,  PAN_KI,  PAN_KD,  MAX_SPEED)
+    pid_pan = PID(PAN_KP, PAN_KI, PAN_KD, MAX_SPEED)
     pid_tilt = PID(TILT_KP, TILT_KI, TILT_KD, MAX_SPEED)
 
-    # ── Serial ────────────────────────────────────────────────────
     ser = None
     try:
-        ser = serial.Serial(args.port, BAUD_RATE, timeout=0.5)
-        print("[INFO] Waiting for Arduino reset ...")
-        time.sleep(2.5)
-        ser.reset_input_buffer()
-        ser.reset_output_buffer()
+        ser = serial.Serial(args.port, BAUD_RATE, timeout=0.1)
+        print(f"[INFO] Connected to {args.port}")
+        time.sleep(2) # Wait for Arduino reset
+    except:
+        print("[WARN] Serial failed. Preview only.")
 
-        # Read READY handshake (optional but useful)
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            if ser.in_waiting:
-                line = ser.readline().decode("ascii", errors="ignore").strip()
-                print(f"[ARDUINO] {line}")
-                if line == "READY":
-                    break
-            time.sleep(0.05)
-
-        send_stop(ser)
-        print(f"[INFO] Serial ready on {args.port} @ {BAUD_RATE}")
-    except serial.SerialException as exc:
-        print(f"[WARN] Could not open {args.port}: {exc}")
-        print("[WARN] Running in preview-only mode (no serial output).")
-
-    # ── State ─────────────────────────────────────────────────────
-    smooth_cx     = None
-    smooth_cy     = None
-    no_body_count = 0
-    smooth_pan    = 0.0
-    smooth_tilt   = 0.0
-    last_send     = 0.0
-    last_time     = time.monotonic()
-    error_x       = 0.0
-    error_y       = 0.0
-
-    print("[INFO] Running — press Q to quit")
+    smooth_cx = smooth_cy = None
+    smooth_pan = smooth_tilt = 0.0
+    last_send = last_time = time.monotonic()
+    frame_count = 0
 
     while True:
         grabbed, frame = cam.read()
@@ -441,97 +248,67 @@ def main():
             time.sleep(0.01)
             continue
 
-        now       = time.monotonic()
-        dt        = max(now - last_time, 1e-6)
-        last_time = now
-
+        frame_count += 1
+        now = time.monotonic()
+        dt, last_time = max(now - last_time, 1e-6), now
         h_f, w_f = frame.shape[:2]
-        cx_frame  = w_f // 2
-        cy_frame  = h_f // 2
 
-        # ── Pose detection (non-blocking) ─────────────────────
-        detector.submit(frame)
-        result    = detector.get_result()
-        landmarks = []
-        pan_raw   = 0.0
-        tilt_raw  = 0.0
-        status    = "NO BODY"
+        # Submit to MediaPipe every 2nd frame to keep main loop snappy
+        if frame_count % 2 == 0:
+            detector.submit(frame)
 
-        if result is not None:
-            no_body_count = 0
+        result = detector.get_result()
+        pan_raw = tilt_raw = 0.0
+        error_x = error_y = 0.0
+        status = "NO BODY"
+        landmarks = None
+
+        if result:
             raw_cx, raw_cy, landmarks = result
+            status = "TRACKING"
 
-            # EMA on centroid position
+            # 1. EMA Centroid
             if smooth_cx is None:
-                smooth_cx = float(raw_cx)
-                smooth_cy = float(raw_cy)
+                smooth_cx, smooth_cy = float(raw_cx), float(raw_cy)
             else:
                 smooth_cx = SMOOTH * smooth_cx + (1.0 - SMOOTH) * raw_cx
                 smooth_cy = SMOOTH * smooth_cy + (1.0 - SMOOTH) * raw_cy
 
-            error_x = smooth_cx - cx_frame
-            error_y = smooth_cy - cy_frame
+            error_x, error_y = smooth_cx - (w_f//2), smooth_cy - (h_f//2)
 
-            # Continuous PID — no input dead zone, D term brakes
-            pan_pid  = pid_pan.update(error_x  * INVERT_PAN,  dt)
+            # 2. Continuous PID
+            pan_pid = pid_pan.update(error_x * INVERT_PAN, dt)
             tilt_pid = pid_tilt.update(error_y * INVERT_TILT, dt)
 
-            # Output dead band — applied AFTER PID
-            pan_raw  = apply_output_deadband(pan_pid,  OUTPUT_DEADBAND)
-            tilt_raw = apply_output_deadband(tilt_pid, OUTPUT_DEADBAND)
-
-            status = "TRACKING"
-
+            # 3. Output Deadband
+            pan_raw = 0.0 if abs(pan_pid) < OUTPUT_DEADBAND else pan_pid
+            tilt_raw = 0.0 if abs(tilt_pid) < OUTPUT_DEADBAND else tilt_pid
         else:
-            no_body_count += 1
-            error_x = error_y = 0.0
-            if no_body_count > 15:
-                smooth_cx = smooth_cy = None
-                pid_pan.reset()
-                pid_tilt.reset()
+            pid_pan.reset()
+            pid_tilt.reset()
 
-        # ── EMA with instant brake ─────────────────────────────
-        # If raw output == 0 → bypass EMA, brake immediately.
-        # Prevents EMA coasting servo past centre.
-        if pan_raw == 0.0:
-            smooth_pan = 0.0
-        else:
-            smooth_pan = CMD_SMOOTH * smooth_pan + (1.0 - CMD_SMOOTH) * pan_raw
+        # 4. Instant Brake + EMA Command
+        smooth_pan = 0.0 if pan_raw == 0.0 else (CMD_SMOOTH * smooth_pan + (1.0 - CMD_SMOOTH) * pan_raw)
+        smooth_tilt = 0.0 if tilt_raw == 0.0 else (CMD_SMOOTH * smooth_tilt + (1.0 - CMD_SMOOTH) * tilt_raw)
 
-        if tilt_raw == 0.0:
-            smooth_tilt = 0.0
-        else:
-            smooth_tilt = CMD_SMOOTH * smooth_tilt + (1.0 - CMD_SMOOTH) * tilt_raw
-
-        pan_cmd  = STOP_PAN  + int(round(smooth_pan))
+        pan_cmd = STOP_PAN + int(round(smooth_pan))
         tilt_cmd = STOP_TILT + int(round(smooth_tilt))
 
-        # ── HUD ───────────────────────────────────────────────
-        draw_hud(frame, status, pan_cmd, tilt_cmd,
-                 smooth_cx, smooth_cy, landmarks,
-                 w_f, h_f, error_x, error_y)
-
-        # ── Serial send (rate-limited) ─────────────────────────
+        # 5. Serial Send
         if ser and (now - last_send) >= SEND_INTERVAL:
-            try:
-                ser.write(build_command(pan_cmd, tilt_cmd))
-            except serial.SerialException:
-                pass
+            ser.write(f"P{pan_cmd:03d}T{tilt_cmd:03d}\n".encode("ascii"))
             last_send = now
 
-        cv2.imshow("DART  [Body Tracker — Anti-Overshoot PID]", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+        # 6. HUD Draw
+        draw_hud(frame, status, pan_cmd, tilt_cmd, smooth_cx, smooth_cy, landmarks, error_x, error_y)
+        
+        cv2.imshow("DART System - High Precision", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'): break
 
-    # ── Shutdown ──────────────────────────────────────────────────
-    send_stop(ser)
-    if ser:
-        ser.close()
+    if ser: ser.close()
     detector.stop()
     cam.stop()
     cv2.destroyAllWindows()
-    print("[INFO] Shut down.")
-
 
 if __name__ == "__main__":
     main()
