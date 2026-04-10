@@ -33,7 +33,7 @@ GAIN_TILT = 0.09  # How much tilt speed per pixel of vertical error (after dead 
 DEAD_ZONE = 40   # Pixels from center: no correction inside this; reduces jitter
 
 INVERT_PAN  = -1  # Multiply pan command by this (use -1 to reverse left/right)
-INVERT_TILT = -1 # Multiply tilt command by this (use -1 to reverse up/down)
+INVERT_TILT = 1 # Multiply tilt command by this (use -1 to reverse up/down)
 
 SMOOTH = 0.65  # Face position smoothing (0..1); higher = smoother but laggier
 

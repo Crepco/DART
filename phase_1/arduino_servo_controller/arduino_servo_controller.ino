@@ -18,7 +18,7 @@
 
 // ── MG996R Trigger Settings ──
 #define TRIGGER_REST_ANGLE  60
-#define TRIGGER_FIRE_ANGLE  120
+#define TRIGGER_FIRE_ANGLE  130
 
 Servo panServo;
 Servo tiltServo;
