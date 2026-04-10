@@ -1,14 +1,15 @@
 """
-Face-Tracking Pan-Tilt Turret Controller
-=========================================
-For CONTINUOUS ROTATION (360 deg) MG996R servos.
+Face-Tracking Pan Turret Controller
+===================================
+For CONTINUOUS ROTATION (360 deg) MG996R pan servo.
 
-Pin 9  = TILT (up/down)
-Pin 10 = PAN  (left/right)
+Pin 9  = PAN  (left/right)
+Pin 8  = TRIGGER
 
-When no face is detected the servos stop (hold position).
+When no face is detected the pan servo stops (hold position).
 
 Upload arduino_servo_controller.ino to your Arduino FIRST.
+Serial format: P###F# (e.g. P090F0) — no tilt.
 """
 
 import argparse   # Parse command-line arguments (--camera, --port)
@@ -23,17 +24,14 @@ import serial  # PySerial: talk to Arduino over USB
 # ══════════════════════════════════════════════════════════════════
 
 STOP_PAN  = 90   # Servo value for pan "stop" (continuous rotation neutral)
-STOP_TILT = 90   # Servo value for tilt "stop" (continuous rotation neutral)
 
 MAX_SPEED = 35   # Max offset from 90; servo range becomes 65..115
 
 GAIN_PAN  = 0.10  # How much pan speed per pixel of horizontal error (after dead zone)
-GAIN_TILT = 0.09  # How much tilt speed per pixel of vertical error (after dead zone)
 
 DEAD_ZONE = 40   # Pixels from center: no correction inside this; reduces jitter
 
 INVERT_PAN  = -1  # Multiply pan command by this (use -1 to reverse left/right)
-INVERT_TILT = 1 # Multiply tilt command by this (use -1 to reverse up/down)
 
 SMOOTH = 0.65  # Face position smoothing (0..1); higher = smoother but laggier
 
@@ -160,17 +158,16 @@ def to_int_offset(raw_offset):
     return int(round(raw_offset))  # Convert float speed offset to integer for serial
 
 
-def build_command(pan_speed: int, tilt_speed: int, fire: bool = False) -> bytes:
+def build_command(pan_speed: int, fire: bool = False) -> bytes:
     p = clamp(pan_speed, STOP_PAN - MAX_SPEED, STOP_PAN + MAX_SPEED)   # Keep in safe range
-    t = clamp(tilt_speed, STOP_TILT - MAX_SPEED, STOP_TILT + MAX_SPEED)
     f = 1 if fire else 0
-    return f"P{p:03d}T{t:03d}F{f}\n".encode("ascii")  # e.g. P090T085F1\n
+    return f"P{p:03d}F{f}\n".encode("ascii")  # e.g. P090F0\n
 
 
 def send_stop(ser):
     if ser:
         try:
-            ser.write(build_command(STOP_PAN, STOP_TILT, fire=False))  # Stop + no fire
+            ser.write(build_command(STOP_PAN, fire=False))  # Stop + no fire
         except serial.SerialException:
             pass
 
@@ -216,7 +213,6 @@ def main():
     no_face_count = 0 # Consecutive frames with no face (reset when face seen)
 
     smooth_pan = 0.0   # Smoothed pan command (reduces servo jitter)
-    smooth_tilt = 0.0  # Smoothed tilt command
 
     last_send = 0.0    # Time of last serial send (for rate limiting)
 
@@ -236,7 +232,6 @@ def main():
         face = detector.get_result()   # Get latest detection (may be stale by one frame)
 
         pan_int = 0    # Pan speed offset to send this frame (-MAX_SPEED .. +MAX_SPEED)
-        tilt_int = 0   # Tilt speed offset
         on_crosshair = False
 
         if face is not None:
@@ -254,7 +249,6 @@ def main():
                 smooth_cy = SMOOTH * smooth_cy + (1.0 - SMOOTH) * raw_cy
 
             error_x = smooth_cx - cx_frame   # Positive = face is right of center
-            error_y = smooth_cy - cy_frame   # Positive = face is below center
 
             if abs(error_x) > DEAD_ZONE:
                 sign_x = 1.0 if error_x > 0 else -1.0
@@ -263,15 +257,8 @@ def main():
                             -MAX_SPEED, MAX_SPEED)
                 pan_int = to_int_offset(raw)
 
-            if abs(error_y) > DEAD_ZONE:
-                sign_y = 1.0 if error_y > 0 else -1.0
-                effective_y = abs(error_y) - DEAD_ZONE
-                raw = clamp(sign_y * effective_y * GAIN_TILT * INVERT_TILT,
-                            -MAX_SPEED, MAX_SPEED)
-                tilt_int = to_int_offset(raw)
-
-            # "Target on crosshair" means centered inside the dead-zone on both axes
-            on_crosshair = (abs(error_x) <= DEAD_ZONE) and (abs(error_y) <= DEAD_ZONE)
+            # Fire when face is horizontally centered in dead zone
+            on_crosshair = abs(error_x) <= DEAD_ZONE
 
             cv2.rectangle(frame, (fx, fy), (fx + fw, fy + fh), (0, 255, 0), 2)  # Draw face box
             cv2.circle(frame, (int(smooth_cx), int(smooth_cy)), 4, (0, 255, 0), -1)  # Draw smoothed center
@@ -284,22 +271,20 @@ def main():
             status = "NO FACE"
 
         smooth_pan  = CMD_SMOOTH * smooth_pan  + (1.0 - CMD_SMOOTH) * pan_int   # Smooth command output
-        smooth_tilt = CMD_SMOOTH * smooth_tilt + (1.0 - CMD_SMOOTH) * tilt_int
 
         pan_cmd  = STOP_PAN  + int(round(smooth_pan))   # Final servo value (e.g. 90 + offset)
-        tilt_cmd = STOP_TILT + int(round(smooth_tilt))
 
         # HUD
         cv2.line(frame, (cx_frame - 15, cy_frame), (cx_frame + 15, cy_frame), (255, 0, 0), 1)   # Crosshair horizontal
         cv2.line(frame, (cx_frame, cy_frame - 15), (cx_frame, cy_frame + 15), (255, 0, 0), 1)  # Crosshair vertical
-        cv2.putText(frame, f"Pan {pan_cmd}  Tilt {tilt_cmd}  [{status}]",
+        cv2.putText(frame, f"Pan {pan_cmd}  [{status}]",
                      (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2)
         cv2.putText(frame, "Q = quit",
                      (10, h_frame - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
 
         # Send to Arduino
         if ser and (now - last_send) >= SEND_INTERVAL:  # Rate limit serial sends
-            cmd = build_command(pan_cmd, tilt_cmd, fire=on_crosshair)
+            cmd = build_command(pan_cmd, fire=on_crosshair)
             try:
                 ser.write(cmd)
             except serial.SerialException:

@@ -2,7 +2,6 @@
 
 // ── Stop values ──
 #define STOP_PAN    90
-#define STOP_TILT   90
 
 // ── Speed limit ──
 #define MAX_SPEED   35
@@ -11,17 +10,15 @@
 #define TIMEOUT_MS  250
 
 // ── Pins ──
-#define TILT_PIN    9
-#define PAN_PIN     10
+#define PAN_PIN     9
 #define TRIGGER_PIN 8
 #define LED_PIN     13
 
 // ── MG996R Trigger Settings ──
 #define TRIGGER_REST_ANGLE  60
-#define TRIGGER_FIRE_ANGLE  130
+#define TRIGGER_FIRE_ANGLE  150
 
 Servo panServo;
-Servo tiltServo;
 Servo triggerServo;
 
 // ── State ──
@@ -42,7 +39,6 @@ int clampSpeed(int v, int center) {
 // ── Stop all safely ──
 void stopAll() {
     panServo.write(STOP_PAN);
-    tiltServo.write(STOP_TILT);
 
     // Always reset trigger
     triggerServo.write(TRIGGER_REST_ANGLE);
@@ -57,7 +53,6 @@ void setup() {
     Serial.begin(9600);
 
     panServo.attach(PAN_PIN);
-    tiltServo.attach(TILT_PIN);
     triggerServo.attach(TRIGGER_PIN);
 
     stopAll();
@@ -108,22 +103,15 @@ void loop() {
     }
 }
 
-// ── Parse incoming command ──
+// ── Parse incoming command: P###F#  (e.g. P090F0) ──
 void parseCommand(const char* cmd) {
 
     if (cmd[0] != 'P') return;
 
-    const char* tPtr = strchr(cmd, 'T');
-    if (!tPtr) return;
-
     int p = atoi(cmd + 1);
-    int t = atoi(tPtr + 1);
 
-    // Apply limits
     panServo.write(clampSpeed(p, STOP_PAN));
-    tiltServo.write(clampSpeed(t, STOP_TILT));
 
-    // 🔥 SAFE FIRE PARSE (IMPORTANT FIX)
     const char* fPtr = strchr(cmd, 'F');
     if (fPtr && (fPtr[1] == '0' || fPtr[1] == '1')) {
         fireRequested = (fPtr[1] == '1');
