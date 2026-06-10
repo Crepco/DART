@@ -31,6 +31,8 @@ Model files (place next to this script or give full path):
 
 import argparse
 import collections
+import os
+import pathlib
 import threading
 import time
 
@@ -78,9 +80,15 @@ CAM_WIDTH = 1280
 CAM_HEIGHT = 720
 CAM_FPS = 30
 
-# --- DNN model files (same directory as script) ---
-DNN_MODEL = "res10_300x300_ssd_iter_140000.caffemodel"
-DNN_CONFIG = "deploy.prototxt"
+# --- DNN model files ---
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+DNN_MODEL = str(PROJECT_ROOT / "models" / "res10_300x300_ssd_iter_140000.caffemodel")
+DNN_CONFIG = str(PROJECT_ROOT / "models" / "deploy.prototxt")
+
+# --- Keras model and labels (for future reference) ---
+KERAS_MODEL = str(PROJECT_ROOT / "models" / "keras_model.h5")
+LABELS_FILE = str(PROJECT_ROOT / "labels.txt")
 
 # Fallback to Haar if DNN files not found
 HAAR_CASCADE = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -113,23 +121,27 @@ class FaceDetector:
         self.scale = scale
         self._use_dnn = False
 
-        # Try DNN first
-        try:
-            self._net = cv2.dnn.readNetFromCaffe(DNN_CONFIG, DNN_MODEL)
-            # Smoke-test: a blank 300×300 blob
-            blob = cv2.dnn.blobFromImage(
-                np.zeros((300, 300, 3), np.uint8),
-                1.0,
-                (300, 300),
-                (104, 177, 123),
-                swapRB=False,
-            )
-            self._net.setInput(blob)
-            self._net.forward()
-            self._use_dnn = True
-            print("[INFO] DNN face detector loaded.")
-        except Exception as exc:
-            print(f"[WARN] DNN load failed ({exc}); falling back to Haar.")
+        # Try DNN first if files exist, otherwise fallback directly to Haar
+        if os.path.exists(DNN_CONFIG) and os.path.exists(DNN_MODEL):
+            try:
+                self._net = cv2.dnn.readNetFromCaffe(DNN_CONFIG, DNN_MODEL)
+                # Smoke-test: a blank 300×300 blob
+                blob = cv2.dnn.blobFromImage(
+                    np.zeros((300, 300, 3), np.uint8),
+                    1.0,
+                    (300, 300),
+                    (104, 177, 123),
+                    swapRB=False,
+                )
+                self._net.setInput(blob)
+                self._net.forward()
+                self._use_dnn = True
+                print("[INFO] DNN face detector loaded.")
+            except Exception as exc:
+                print(f"[WARN] DNN load failed ({exc}); falling back to Haar.")
+                self._cascade = cv2.CascadeClassifier(HAAR_CASCADE)
+        else:
+            print("[WARN] DNN model files not found; falling back to Haar.")
             self._cascade = cv2.CascadeClassifier(HAAR_CASCADE)
 
         # Low-light tools (used inside detector thread)

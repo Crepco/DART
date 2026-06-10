@@ -32,12 +32,15 @@ Tips for best recognition accuracy
 
 import argparse
 import os
+import pathlib
 import time
 
 import cv2
 
 # ── Config ───────────────────────────────────────────────────────
-KNOWN_FACES_DIR = "known_faces"
+SCRIPT_DIR      = pathlib.Path(__file__).resolve().parent
+PROJECT_ROOT    = SCRIPT_DIR.parent
+KNOWN_FACES_DIR = str(PROJECT_ROOT / "known_faces")
 CAM_WIDTH       = 1280
 CAM_HEIGHT      = 720
 CAM_FPS         = 30
