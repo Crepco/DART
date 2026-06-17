@@ -1,55 +1,47 @@
-/*
- * Face-Tracking Turret – Arduino Controller (ZERO LATENCY)
- * ==========================================================
- * Updated to work with the Python PID controller. 
- * All smoothing, deadbands, and logic are handled by Python.
- * This Arduino simply executes commands as fast as possible.
- * * Hardware Safety: Includes hardware-level bounds checking
- * to protect against corrupted serial packets.
- */
-
+// DART turret servo controller. Protocol + safety notes: see DOCS_SERIAL_PROTOCOL.md
 #include <Servo.h>
 
-// ── Neutral / stop ─────────────────
 #define STOP_PAN 90
 #define STOP_TILT 90
 
-// ── Timeout ────────────────────────
-#define TIMEOUT_MS 500 // Stops motors if Python crashes or disconnects
+#define TRIGGER_REST_ANGLE 60
+#define TRIGGER_FIRE_ANGLE 150
 
-// ── Pins ───────────────────────────
+#define TIMEOUT_MS 500
+
 #define TILT_PIN 9
 #define PAN_PIN 10
+#define TRIGGER_PIN 8
 #define LED_PIN 13
 
 Servo panServo;
 Servo tiltServo;
+Servo triggerServo;
 
 char buf[32];
 uint8_t bufIdx = 0;
 unsigned long lastCmdTime = 0;
+bool fireState = false;
 
-// ───────────────────────────────────
 void stopAll()
 {
     panServo.write(STOP_PAN);
     tiltServo.write(STOP_TILT);
+    triggerServo.write(TRIGGER_REST_ANGLE);
+    fireState = false;
 }
 
-// ───────────────────────────────────
 void setup()
 {
     pinMode(LED_PIN, OUTPUT);
-    
-    // MATCHES PYTHON SCRIPT FOR LOW LATENCY
-    Serial.begin(115200); 
+    Serial.begin(115200);
 
-    // Clear any junk in the serial buffer
     while (Serial.available())
         Serial.read();
 
     panServo.attach(PAN_PIN);
     tiltServo.attach(TILT_PIN);
+    triggerServo.attach(TRIGGER_PIN);
 
     stopAll();
     delay(500);
@@ -62,10 +54,8 @@ void setup()
     lastCmdTime = millis();
 }
 
-// ───────────────────────────────────
 void loop()
 {
-    // Read serial
     while (Serial.available())
     {
         char c = (char)Serial.read();
@@ -86,14 +76,10 @@ void loop()
         }
     }
 
-    // Timeout safety
     if (millis() - lastCmdTime > TIMEOUT_MS)
-    {
         stopAll();
-    }
 }
 
-// ───────────────────────────────────
 void parseCommand(const char *cmd)
 {
     if (cmd[0] != 'P')
@@ -108,6 +94,13 @@ void parseCommand(const char *cmd)
 
     panServo.write(p);
     tiltServo.write(t);
+
+    const char *fPtr = strchr(cmd, 'F');
+    if (fPtr)
+    {
+        fireState = (fPtr[1] == '1');
+        triggerServo.write(fireState ? TRIGGER_FIRE_ANGLE : TRIGGER_REST_ANGLE);
+    }
 
     lastCmdTime = millis();
 }
