@@ -75,12 +75,13 @@ FACE_CONF    = 0.45                 # min confidence for face detection
 # --- Servo ---
 STOP_PAN    = 90
 STOP_TILT   = 90
-MAX_SPEED   = 35
+MAX_SPEED   = 25
 INVERT_PAN  = -1
-INVERT_TILT =  1
+INVERT_TILT = -1
 
-# --- Output dead band ---
+# --- Dead bands ---
 OUTPUT_DEADBAND = 3
+INPUT_DEADBAND = 15  # Pixel deadzone near center
 
 # --- PID gains ---
 #
@@ -110,8 +111,8 @@ TILT_KP, TILT_KI, TILT_KD = 0.04, 0.001, 0.11   # KD raised: 0.09→0.11
 INTEGRAL_CLAMP = 10.0   # units: same as servo offset
 
 # --- Smoothing ---
-SMOOTH     = 0.65   # body centroid EMA
-CMD_SMOOTH = 0.70   # servo command EMA
+SMOOTH     = 0.85   # body centroid EMA
+CMD_SMOOTH = 0.65  # servo command EMA
 
 # --- Slew rate limiter ---
 # Physical acceleration limit in servo-offset units per SECOND.
@@ -120,7 +121,7 @@ CMD_SMOOTH = 0.70   # servo command EMA
 # At 30 FPS (dt≈33ms): effective per-frame cap ≈ 75 * 0.033 = ~2.5 units
 #   Still jerking on sudden target jump? Lower to 50.0
 #   Too sluggish to start moving?        Raise to 100.0
-MAX_CMD_CHANGE_PER_SEC = 75.0
+MAX_CMD_CHANGE_PER_SEC = 25.0
 
 # --- Serial ---
 PORT          = "COM3"
@@ -489,6 +490,9 @@ def main():
     last_time     = time.monotonic()
     error_x       = 0.0
     error_y       = 0.0
+    last_sent_pan = STOP_PAN
+    last_sent_tilt = STOP_TILT
+    HEARTBEAT_INTERVAL = 0.4
 
     print("[INFO] Running — press Q to quit")
 
@@ -519,9 +523,12 @@ def main():
         tilt_raw = 0.0
         status   = "NO BODY"
 
-        if person_box is not None:
+        # Track ONLY the face (green box). Ignore the person body completely.
+        target_box = faces[0] if faces else None
+
+        if target_box is not None:
             no_body_count = 0
-            x1, y1, x2, y2 = person_box
+            x1, y1, x2, y2 = target_box
             raw_cx = (x1 + x2) // 2
             raw_cy = (y1 + y2) // 2
 
@@ -535,6 +542,12 @@ def main():
 
             error_x = smooth_cx - cx_frame
             error_y = smooth_cy - cy_frame
+
+            # 1. Input deadband (pixel threshold)
+            if abs(error_x) < INPUT_DEADBAND:
+                error_x = 0.0
+            if abs(error_y) < INPUT_DEADBAND:
+                error_y = 0.0
 
             # Continuous PID — tighter integral clamp prevents snap-on-return
             pan_pid  = pid_pan.update(error_x  * INVERT_PAN,  dt, INTEGRAL_CLAMP)
@@ -585,13 +598,20 @@ def main():
                  person_box, all_persons, faces, track_id,
                  w_f, h_f, error_x, error_y)
 
-        # ── Serial send (rate-limited) ─────────────────────────
-        if ser and (now - last_send) >= SEND_INTERVAL:
-            try:
-                ser.write(build_command(pan_cmd, tilt_cmd))
-            except serial.SerialException:
-                pass
-            last_send = now
+        # ── Serial send (rate-limited and state-tracked) ─────────────────────────
+        if ser:
+            time_since_send = now - last_send
+            changed = (pan_cmd != last_sent_pan or tilt_cmd != last_sent_tilt)
+            
+            # Send if command changed (subject to max rate) or heartbeat needed
+            if (changed and time_since_send >= SEND_INTERVAL) or (time_since_send >= HEARTBEAT_INTERVAL):
+                try:
+                    ser.write(build_command(pan_cmd, tilt_cmd))
+                    last_sent_pan = pan_cmd
+                    last_sent_tilt = tilt_cmd
+                    last_send = now
+                except serial.SerialException:
+                    pass
 
         cv2.imshow("DART  [YOLO + Slew Rate Limiter]", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):

@@ -14,11 +14,8 @@
 #define STOP_PAN 90
 #define STOP_TILT 90
 
-// ── Speed cap ──────────────────────
-#define MAX_SPEED 35 // Max offset from 90 (Range: 55 to 125)
-
 // ── Timeout ────────────────────────
-#define TIMEOUT_MS 400 // Stops motors if Python crashes or disconnects
+#define TIMEOUT_MS 500 // Stops motors if Python crashes or disconnects
 
 // ── Pins ───────────────────────────
 #define TILT_PIN 9
@@ -108,12 +105,6 @@ void parseCommand(const char *cmd)
 
     int p = atoi(cmd + 1);
     int t = atoi(tPtr + 1);
-
-    // ── Safety clamp ──────────────────────────────
-    // Python already clamps, but this protects the 
-    // servos if a corrupted packet slips through.
-    p = constrain(p, STOP_PAN - MAX_SPEED, STOP_PAN + MAX_SPEED);
-    t = constrain(t, STOP_TILT - MAX_SPEED, STOP_TILT + MAX_SPEED);
 
     panServo.write(p);
     tiltServo.write(t);

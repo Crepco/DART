@@ -1,7 +1,7 @@
-tensorflow==2.15.0
-mediapipe==0.10.11
+
 opencv-python==4.9.0.80
 opencv-contrib-python==4.9.0.80
 numpy==1.26.4
 protobuf==3.20.3
 pyserial==3.5
+ultralytics>=8.4.0
