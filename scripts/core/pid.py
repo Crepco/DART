@@ -1,0 +1,28 @@
+import numpy as np
+
+from config import PAN_KP, PAN_KI, PAN_KD, TILT_KP, TILT_KI, TILT_KD, D_SMOOTH, INTEGRAL_CLAMP
+
+
+class PID:
+    def __init__(self, kp, ki, kd, limit, d_smooth=D_SMOOTH):
+        self.kp, self.ki, self.kd = kp, ki, kd
+        self.limit      = limit
+        self.d_smooth   = d_smooth
+        self.integral   = 0.0
+        self.prev_error = 0.0
+        self.deriv      = 0.0
+
+    def update(self, error: float, dt: float, integral_clamp: float = None) -> float:
+        dt    = max(dt, 1e-6)
+        i_lim = integral_clamp if integral_clamp is not None else self.limit
+        self.integral = float(np.clip(self.integral + error * dt, -i_lim, i_lim))
+        raw_deriv       = (error - self.prev_error) / dt
+        self.deriv      = self.d_smooth * self.deriv + (1.0 - self.d_smooth) * raw_deriv
+        self.prev_error = error
+        raw = self.kp * error + self.ki * self.integral + self.kd * self.deriv
+        return float(np.clip(raw, -self.limit, self.limit))
+
+    def reset(self):
+        self.integral   = 0.0
+        self.prev_error = 0.0
+        self.deriv      = 0.0

@@ -35,6 +35,7 @@ desktop.ini
 
 # ── Known faces (privacy) ────────────────────────────────────────
 known_faces/
+scripts/embeddings/*.pkl
 
 # ── Logs & temp ──────────────────────────────────────────────────
 *.log

@@ -15,5 +15,9 @@ torchvision==0.27.0
 # Serial link to Arduino
 pyserial==3.5
 
+# Face recognition / authorization (auth module)
+insightface
+onnxruntime
+
 # Transitive / protobuf-using paths (onnx export, etc.)
 protobuf==3.20.3

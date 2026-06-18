@@ -56,15 +56,23 @@ Three threads keep the control loop responsive and decoupled from model latency:
 The MG996R servos have ~50–100 ms mechanical lag, so several filters stack to keep motion
 smooth and silent at rest:
 
-1. **Centroid EMA** (`SMOOTH = 0.85`) — smooths the measured face position.
-2. **Input deadband** (`INPUT_DEADBAND = 15 px`) — ignores tiny centre errors.
+1. **Centroid EMA** (`SMOOTH = 0.90`) — smooths the measured face position so detection
+   wobble doesn't reach the controller.
+2. **Input deadband** (`INPUT_DEADBAND = 30 px`) — zeroes small centre errors *before* the
+   PID, so a still target produces no command. Kept below `LOCK_ON_RADIUS` so the turret
+   still settles inside the fire zone. This is the primary "stops moving when the person
+   isn't moving" control — raise it (to 40–50) if it still hunts.
 3. **PID** — per-axis, with output clamped to `MAX_SPEED`.
    - **KP** (~0.04): proportional anchor. Too high → overshoot against servo lag.
-   - **KD** (0.11–0.12): anti-overshoot brake — the most important knob. If the turret
-     overshoots when the target stops, raise KD in steps (0.10 → 0.12 → 0.15).
+   - **KD** (0.09–0.10): anti-overshoot brake. Raise in steps (→ 0.12 → 0.15) if the turret
+     overshoots when the target stops; lower if it twitches.
+   - **Filtered derivative** (`D_SMOOTH = 0.70`): the raw derivative `(error−prev)/dt` hugely
+     amplifies detection noise at low FPS (a few px of wobble → large command spikes on a
+     velocity-commanded servo). The D term is low-pass filtered (EMA, new-sample weight 0.3)
+     so noise no longer drives the motors. This is the key fix for idle/near-still jitter.
    - **KI** (0.001): keep very low. A target just out of reach winds up the integral and
      snaps on return; also hard-clamped by `INTEGRAL_CLAMP`.
-4. **Output deadband** (`OUTPUT_DEADBAND = 3`) — suppresses buzz at centre. Raise to 4–5
+4. **Output deadband** (`OUTPUT_DEADBAND = 4`) — suppresses buzz at centre. Raise to 5–6
    if the servos chatter when locked.
 5. **Command EMA** (`CMD_SMOOTH = 0.80`) — smooths the PID output. New-sample weight is
    `1 − CMD_SMOOTH ≈ 0.2`, matching the standard form
