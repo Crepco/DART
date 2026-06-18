@@ -4,6 +4,7 @@ import argparse
 import math
 import os
 import time
+import warnings
 
 import cv2
 import numpy as np
@@ -13,27 +14,37 @@ from config import *
 from core import CameraStream, YOLODetector, PID, build_command, send_stop, clamp
 from core.detector import select_face
 
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 
 def apply_output_deadband(value: float, band: float) -> float:
     return 0.0 if abs(value) < band else value
 
 
+AUTH_COLS = {"AUTHORIZED":   COL_AUTHORIZED,
+             "UNAUTHORIZED": COL_UNAUTHORIZED,
+             "UNKNOWN":      COL_AUTH_UNKNOWN}
+
+
 def draw_hud(frame, status, pan_cmd, tilt_cmd,
              smooth_cx, smooth_cy,
              person_box, all_persons, faces, track_id,
-             w_f, h_f, error_x, error_y, fire, locked):
+             w_f, h_f, error_x, error_y, fire, locked, auth_statuses):
 
     tracking = (status == "TRACKING")
     bar_col  = COL_TRACKING if tracking else COL_NO_BODY
     cx_f, cy_f = w_f // 2, h_f // 2
 
     for (x1, y1, x2, y2, tid) in all_persons:
-        is_target = (tid == track_id)
-        col       = COL_PERSON if is_target else (80, 80, 80)
-        thickness = 2 if is_target else 1
+        auth_status = auth_statuses.get(tid, "UNKNOWN")
+        col         = AUTH_COLS[auth_status]
+        is_target   = (tid == track_id)
+        thickness   = 3 if is_target else 1
         cv2.rectangle(frame, (x1, y1), (x2, y2), col, thickness, cv2.LINE_AA)
-        cv2.putText(frame, f"ID{tid}", (x1, y1 - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, COL_TRACK_ID, 1, cv2.LINE_AA)
+        cv2.putText(frame, f"ID{tid} {auth_status}", (x1, y1 - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
+        if auth_status == "UNAUTHORIZED":
+            cv2.circle(frame, (x2 - 8, y1 + 8), 5, COL_UNAUTHORIZED, -1, cv2.LINE_AA)
 
     for (x1, y1, x2, y2) in faces:
         cv2.rectangle(frame, (x1, y1), (x2, y2), COL_FACE_BOX, 2, cv2.LINE_AA)
@@ -150,10 +161,11 @@ def main():
         detector.submit(frame)
         det = detector.get_result()
 
-        person_box  = det["person_box"]
-        track_id    = det["track_id"]
-        all_persons = det["all_persons"]
-        faces       = det["faces"]
+        person_box    = det["person_box"]
+        track_id      = det["track_id"]
+        all_persons   = det["all_persons"]
+        faces         = det["faces"]
+        auth_statuses = det["auth_statuses"]
 
         pan_raw  = 0.0
         tilt_raw = 0.0
@@ -228,7 +240,7 @@ def main():
         draw_hud(frame, status, pan_cmd, tilt_cmd,
                  smooth_cx, smooth_cy,
                  person_box, all_persons, faces, track_id,
-                 w_f, h_f, error_x, error_y, fire, locked)
+                 w_f, h_f, error_x, error_y, fire, locked, auth_statuses)
 
         if ser:
             time_since_send = now - last_send

@@ -60,6 +60,7 @@ HEARTBEAT_INTERVAL = 0.4
 SIMILARITY_THRESHOLD     = 0.4
 CLASSIFY_EVERY_N_FRAMES  = 10
 DEBOUNCE_COUNT           = 5
+EMBEDDINGS_PATH          = str(SCRIPT_DIR / "embeddings" / "authorized.pkl")
 
 # ── HUD Colours (BGR) ──
 COL_TRACKING  = (0, 220,  80)

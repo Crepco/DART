@@ -1,1 +1,2 @@
-# auth module — classifier and track_manager will be added here
+from .classifier import FaceClassifier
+from .track_manager import TrackManager

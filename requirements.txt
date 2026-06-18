@@ -1,4 +1,4 @@
-# DART turret — host dependencies (scripts/yolo.py). See DOCS_ARCHITECTURE.md
+# DART turret — host dependencies (scripts/main.py). See docs/ARCHITECTURE.md
 # Pinned to the verified working environment.
 
 # Vision

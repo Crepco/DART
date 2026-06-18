@@ -8,6 +8,7 @@ import numpy as np
 from ultralytics import YOLO
 
 from config import CAM_HEIGHT, CAM_WIDTH, PERSON_CONF, FACE_CONF
+from auth import FaceClassifier, TrackManager
 
 
 class YOLODetector:
@@ -16,10 +17,11 @@ class YOLODetector:
         self._frame     = None
         self._new_frame = False
         self._result    = {
-            "person_box":  None,
-            "track_id":    None,
-            "all_persons": [],
-            "faces":       [],
+            "person_box":   None,
+            "track_id":     None,
+            "all_persons":  [],
+            "faces":        [],
+            "auth_statuses": {},
         }
         self._stopped = False
 
@@ -37,6 +39,9 @@ class YOLODetector:
         self._person_model.track(dummy, persist=True, verbose=False)
         if self._face_model:
             self._face_model(dummy, verbose=False)
+
+        self._classifier    = FaceClassifier()
+        self._track_manager = TrackManager()
 
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -81,6 +86,9 @@ class YOLODetector:
             all_persons = []
             person_box  = None
             track_id    = None
+            auth_statuses = {}
+
+            h_f, w_f = frame.shape[:2]
 
             r = p_results[0]
             if r.boxes is not None and len(r.boxes):
@@ -93,7 +101,27 @@ class YOLODetector:
                     all_persons.append((x1, y1, x2, y2, tid))
 
                 current_ids = [p[4] for p in all_persons]
-                if locked_id not in current_ids:
+
+                self._track_manager.cleanup(current_ids)
+                for (x1, y1, x2, y2, tid) in all_persons:
+                    self._track_manager.tick(tid)
+                    if self._track_manager.should_classify(tid):
+                        x1c, y1c = max(0, x1), max(0, y1)
+                        x2c, y2c = min(w_f, x2), min(h_f, y2)
+                        crop = frame[y1c:y2c, x1c:x2c]
+                        status = self._classifier.classify(crop)
+                        self._track_manager.update_status(tid, status)
+
+                auth_statuses = {tid: self._track_manager.get_status(tid)
+                                 for tid in current_ids}
+
+                # Prefer UNAUTHORIZED tracks as the locked target.
+                target_ids = [tid for tid in current_ids
+                              if self._track_manager.is_target(tid)]
+                if target_ids:
+                    if locked_id not in target_ids:
+                        locked_id = target_ids[0]
+                elif locked_id not in current_ids:
                     locked_id = current_ids[0]
 
                 for (x1, y1, x2, y2, tid) in all_persons:
@@ -117,10 +145,11 @@ class YOLODetector:
 
             with self._lock:
                 self._result = {
-                    "person_box":  person_box,
-                    "track_id":    track_id,
-                    "all_persons": all_persons,
-                    "faces":       faces,
+                    "person_box":   person_box,
+                    "track_id":     track_id,
+                    "all_persons":  all_persons,
+                    "faces":        faces,
+                    "auth_statuses": auth_statuses,
                 }
 
 
