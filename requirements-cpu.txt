@@ -1,0 +1,31 @@
+# DART turret — CPU-only install (no NVIDIA GPU). See docs/ARCHITECTURE.md
+# Use this instead of requirements.txt on a machine without a GPU:
+#     pip install -r requirements-cpu.txt
+# Same code, same versions — only the torch/onnxruntime builds differ. The runtime
+# auto-detects the absence of CUDA and runs YOLO + InsightFace on CPU (see
+# DEVICE in scripts/core/detector.py). No code changes are needed to switch.
+
+# CPU-only wheels for torch/torchvision (~200 MB vs ~2.5 GB for the CUDA build).
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Vision
+opencv-python==4.9.0.80
+opencv-contrib-python==4.9.0.80
+numpy==1.26.4
+pillow==12.2.0
+
+# YOLO inference (CPU build)
+ultralytics==8.4.63
+torch==2.12.0+cpu
+torchvision==0.27.0+cpu
+
+# Serial link to Arduino
+pyserial==3.5
+
+# Face recognition / authorization (auth module)
+# Plain (CPU) onnxruntime — the classifier requests CUDA first and falls back to CPU.
+insightface
+onnxruntime==1.26.0
+
+# Transitive / protobuf-using paths (onnx export, etc.)
+protobuf==3.20.3

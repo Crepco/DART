@@ -118,6 +118,11 @@ arriving at watchdog recovery cannot re-fire from stale state.
 ## Usage
 
 ```
-pip install -r requirements.txt
-python scripts/yolo.py [--camera N] [--port PORT]
+pip install -r requirements.txt          # NVIDIA GPU (CUDA 12.6 torch + onnxruntime-gpu)
+pip install -r requirements-cpu.txt      # CPU-only machine (lean ~200 MB torch build)
+python scripts/main.py [--camera N] [--port PORT]
 ```
+
+Both files install identical versions — only the torch/onnxruntime builds differ. The
+runtime auto-detects CUDA (`DEVICE` in `scripts/core/detector.py`) and runs on whatever is
+available, so no code changes are needed to switch between the two.

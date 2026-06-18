@@ -1,5 +1,11 @@
 # DART turret — host dependencies (scripts/main.py). See docs/ARCHITECTURE.md
 # Pinned to the verified working environment.
+#
+# Install everything (incl. GPU torch) in one shot:  pip install -r requirements.txt
+
+# CUDA 12.6 wheels for torch/torchvision. This index also carries CPU builds, so it
+# is safe on a machine without an NVIDIA GPU (the CUDA build just runs on CPU there).
+--extra-index-url https://download.pytorch.org/whl/cu126
 
 # Vision
 opencv-python==4.9.0.80
@@ -7,21 +13,22 @@ opencv-contrib-python==4.9.0.80
 numpy==1.26.4
 pillow==12.2.0
 
-# YOLO inference (ultralytics pulls torch; pinned for reproducibility)
-# For GPU, install the CUDA wheel instead of the default CPU build:
-#   pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/cu121
+# YOLO inference (ultralytics pulls torch; pinned for reproducibility).
+# +cu126 = CUDA 12.6 build from the extra index above, so YOLO runs on the GPU with
+# no extra commands. On a CPU-only host these still install and run (just on CPU).
 ultralytics==8.4.63
-torch==2.12.0
-torchvision==0.27.0
+torch==2.12.0+cu126
+torchvision==0.27.0+cu126
 
 # Serial link to Arduino
 pyserial==3.5
 
 # Face recognition / authorization (auth module)
-# onnxruntime-gpu runs InsightFace classify() on CUDA; falls back to CPU if the
-# GPU provider is unavailable. Use plain `onnxruntime` on a CPU-only host.
+# onnxruntime-gpu runs InsightFace classify() on CUDA; it falls back to CPU if the
+# GPU provider / cuDNN libs are unavailable. Swap to plain `onnxruntime` on a
+# CPU-only host to avoid the larger GPU download.
 insightface
-onnxruntime-gpu
+onnxruntime-gpu==1.26.0
 
 # Transitive / protobuf-using paths (onnx export, etc.)
 protobuf==3.20.3
