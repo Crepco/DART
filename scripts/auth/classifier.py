@@ -11,7 +11,11 @@ from config import SIMILARITY_THRESHOLD, EMBEDDINGS_PATH
 
 class FaceClassifier:
     def __init__(self):
-        self.app = FaceAnalysis(name="buffalo_sc")
+        # Prefer CUDA; onnxruntime silently drops to CPU if the GPU provider is absent.
+        self.app = FaceAnalysis(
+            name="buffalo_sc",
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        )
         self.app.prepare(ctx_id=0, det_size=(320, 320))
 
         self.db = {}

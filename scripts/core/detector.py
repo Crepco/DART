@@ -5,10 +5,14 @@ import threading
 import time
 
 import numpy as np
+import torch
 from ultralytics import YOLO
 
 from config import CAM_HEIGHT, CAM_WIDTH, PERSON_CONF, FACE_CONF
 from auth import FaceClassifier, TrackManager
+
+# Run YOLO on the GPU when available; falls back to CPU transparently.
+DEVICE = 0 if torch.cuda.is_available() else "cpu"
 
 
 class _ClassifierWorker:
@@ -71,6 +75,7 @@ class YOLODetector:
         }
         self._stopped = False
 
+        print(f"[INFO] YOLO device: {DEVICE}")
         print(f"[INFO] Loading person model: {person_model_path}")
         self._person_model = YOLO(person_model_path)
 
@@ -82,9 +87,9 @@ class YOLODetector:
             print(f"[WARN] Face model not found ({face_model_path}). Face boxes disabled.")
 
         dummy = np.zeros((CAM_HEIGHT, CAM_WIDTH, 3), dtype=np.uint8)
-        self._person_model.track(dummy, persist=True, verbose=False)
+        self._person_model.track(dummy, persist=True, verbose=False, device=DEVICE)
         if self._face_model:
-            self._face_model(dummy, verbose=False)
+            self._face_model(dummy, verbose=False, device=DEVICE)
 
         self._classifier    = FaceClassifier()
         self._track_manager = TrackManager()
@@ -125,7 +130,7 @@ class YOLODetector:
             try:
                 p_results = self._person_model.track(
                     frame, persist=True, classes=[0], conf=PERSON_CONF,
-                    verbose=False, tracker="bytetrack.yaml",
+                    verbose=False, tracker="bytetrack.yaml", device=DEVICE,
                 )
             except Exception as e:
                 print(f"[WARN] Person model error: {e}")
@@ -195,7 +200,7 @@ class YOLODetector:
             faces = []
             if self._face_model is not None:
                 try:
-                    f_results = self._face_model(frame, conf=FACE_CONF, verbose=False)
+                    f_results = self._face_model(frame, conf=FACE_CONF, verbose=False, device=DEVICE)
                     fr = f_results[0]
                     if fr.boxes is not None:
                         for box in fr.boxes.xyxy.cpu().tolist():

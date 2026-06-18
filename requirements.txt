@@ -8,6 +8,8 @@ numpy==1.26.4
 pillow==12.2.0
 
 # YOLO inference (ultralytics pulls torch; pinned for reproducibility)
+# For GPU, install the CUDA wheel instead of the default CPU build:
+#   pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/cu121
 ultralytics==8.4.63
 torch==2.12.0
 torchvision==0.27.0
@@ -16,8 +18,10 @@ torchvision==0.27.0
 pyserial==3.5
 
 # Face recognition / authorization (auth module)
+# onnxruntime-gpu runs InsightFace classify() on CUDA; falls back to CPU if the
+# GPU provider is unavailable. Use plain `onnxruntime` on a CPU-only host.
 insightface
-onnxruntime
+onnxruntime-gpu
 
 # Transitive / protobuf-using paths (onnx export, etc.)
 protobuf==3.20.3

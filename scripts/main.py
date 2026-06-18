@@ -105,24 +105,37 @@ def main():
 
     ser = None
     try:
-        ser = serial.Serial(args.port, BAUD_RATE, timeout=0.5)
+        # write_timeout guards against an infinite hang when the port opens but
+        # nothing drains it (e.g. a phantom Bluetooth COM port, no Arduino).
+        ser = serial.Serial(args.port, BAUD_RATE, timeout=0.5, write_timeout=1.0)
         print("[INFO] Waiting for Arduino reset ...")
         time.sleep(2.5)
         ser.reset_input_buffer()
         ser.reset_output_buffer()
+        got_ready = False
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             if ser.in_waiting:
                 line = ser.readline().decode("ascii", errors="ignore").strip()
                 print(f"[ARDUINO] {line}")
                 if line == "READY":
+                    got_ready = True
                     break
             time.sleep(0.05)
-        send_stop(ser)
-        print(f"[INFO] Serial ready on {args.port} @ {BAUD_RATE}")
+        if got_ready:
+            send_stop(ser)
+            print(f"[INFO] Serial ready on {args.port} @ {BAUD_RATE}")
+        else:
+            # Port opened but no Arduino answered — don't let a dead port stall
+            # or stutter the loop. Drop to preview-only so the feed still shows.
+            print(f"[WARN] No READY handshake on {args.port} — no Arduino responding.")
+            print("[WARN] Running in preview-only mode (no serial output).")
+            ser.close()
+            ser = None
     except serial.SerialException as exc:
         print(f"[WARN] Could not open {args.port}: {exc}")
         print("[WARN] Running in preview-only mode (no serial output).")
+        ser = None
 
     smooth_cx     = None
     smooth_cy     = None

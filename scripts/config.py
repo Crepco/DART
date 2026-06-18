@@ -58,8 +58,10 @@ HEARTBEAT_INTERVAL = 0.4
 
 # ── Auth ──
 SIMILARITY_THRESHOLD     = 0.4
-CLASSIFY_EVERY_N_FRAMES  = 10
-DEBOUNCE_COUNT           = 5
+CLASSIFY_EVERY_N_FRAMES  = 10   # steady-state re-check cadence for a confirmed track
+CLASSIFY_EVERY_N_FRAMES_UNCONFIRMED = 1   # classify every frame until a track is confirmed
+DEBOUNCE_COUNT           = 5    # agreeing reads to *flip* an already-established status
+DEBOUNCE_COUNT_INITIAL   = 2    # agreeing reads to confirm the FIRST status (fast acquire)
 EMBEDDINGS_PATH          = str(SCRIPT_DIR / "embeddings" / "authorized.pkl")
 
 # ── HUD Colours (BGR) ──

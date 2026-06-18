@@ -2,7 +2,8 @@
 
 from dataclasses import dataclass
 
-from config import CLASSIFY_EVERY_N_FRAMES, DEBOUNCE_COUNT
+from config import (CLASSIFY_EVERY_N_FRAMES, CLASSIFY_EVERY_N_FRAMES_UNCONFIRMED,
+                    DEBOUNCE_COUNT, DEBOUNCE_COUNT_INITIAL)
 
 
 @dataclass
@@ -30,7 +31,11 @@ class TrackManager:
 
     def should_classify(self, track_id) -> bool:
         state = self.get_or_create(track_id)
-        return (state.frame_counter - 1) % CLASSIFY_EVERY_N_FRAMES == 0
+        # Unconfirmed tracks classify every frame so a new face resolves fast; once a
+        # status is locked in, fall back to the slow steady-state re-check cadence.
+        cadence = (CLASSIFY_EVERY_N_FRAMES_UNCONFIRMED
+                   if state.auth_status == "UNKNOWN" else CLASSIFY_EVERY_N_FRAMES)
+        return (state.frame_counter - 1) % cadence == 0
 
     def update_status(self, track_id, new_status):
         state = self.get_or_create(track_id)
@@ -45,7 +50,11 @@ class TrackManager:
             state.pending_status = new_status
             state.consecutive_count = 1
 
-        if state.consecutive_count >= DEBOUNCE_COUNT and new_status != state.auth_status:
+        # Confirm the first status quickly; require the full debounce only to *flip* an
+        # already-established status, which guards confirmed tracks against flicker.
+        threshold = (DEBOUNCE_COUNT_INITIAL
+                     if state.auth_status == "UNKNOWN" else DEBOUNCE_COUNT)
+        if state.consecutive_count >= threshold and new_status != state.auth_status:
             old = state.auth_status
             state.auth_status = new_status
             print(f"[AUTH] Track {track_id}: {old} -> {new_status}")
