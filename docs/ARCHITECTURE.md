@@ -74,11 +74,13 @@ smooth and silent at rest:
      snaps on return; also hard-clamped by `INTEGRAL_CLAMP`.
 4. **Output deadband** (`OUTPUT_DEADBAND = 4`) — suppresses buzz at centre. Raise to 5–6
    if the servos chatter when locked.
-5. **Command EMA** (`CMD_SMOOTH = 0.80`) — smooths the PID output. New-sample weight is
-   `1 − CMD_SMOOTH ≈ 0.2`, matching the standard form
-   `out_new = α·target + (1−α)·out_old` with α ≈ 0.2.
-6. **Slew-rate limiter** (`MAX_CMD_CHANGE_PER_SEC = 25.0`, dt-scaled) — caps acceleration
-   to a consistent physical limit regardless of camera FPS. The limiter is allowed to ramp
+5. **Command EMA** (`CMD_SMOOTH = 0.85`) — smooths the PID output. New-sample weight is
+   `1 − CMD_SMOOTH ≈ 0.15`, matching the standard form
+   `out_new = α·target + (1−α)·out_old` with α ≈ 0.15.
+6. **Slew-rate limiter** (`MAX_CMD_CHANGE_PER_SEC_PAN = 25.0` / `MAX_CMD_CHANGE_PER_SEC_TILT = 15.0`,
+   dt-scaled) — caps the per-axis rate of command change regardless of camera FPS. Tilt is
+   slower because the camera rides the tilt joint, so gentler tilt reduces USB-cable flex.
+   The limiter is allowed to ramp
    down naturally (no instant brake-to-zero) to avoid dead-band chatter on oscillation;
    state is only fully zeroed when the target is completely lost.
 

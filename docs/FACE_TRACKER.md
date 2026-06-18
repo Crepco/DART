@@ -44,7 +44,7 @@ All tuning is at the top of the script.
 | `DEAD_ZONE` | `40` | Pixels from frame center with no correction (reduces jitter) |
 | `INVERT_PAN` / `INVERT_TILT` | `-1` / `1` | Flip direction if servos turn the wrong way |
 | `SMOOTH` | `0.65` | Face position smoothing (0..1); higher = smoother, more lag |
-| `CMD_SMOOTH` | `0.7` | Smoothing on the servo command; higher = more stable, slower reaction |
+| `CMD_SMOOTH` | `0.85` | Smoothing on the servo command; higher = more stable, slower reaction |
 | `DETECTION_SCALE` | `0.5` | Run detection on half-size frame for speed |
 | `MIN_FACE_SIZE` | `30` | Minimum face width/height in the *scaled* image (pixels) |
 | `BAUD_RATE` | `9600` | Must match Arduino `Serial.begin(9600)` |
@@ -72,6 +72,7 @@ This keeps camera and detection from blocking each other and keeps serial traffi
 - Opens the camera with `cv2.VideoCapture(src, cv2.CAP_DSHOW)` on Windows to reduce lag.
 - Prefers MJPEG and a small buffer (`CAP_PROP_BUFFERSIZE = 1`).
 - Background thread calls `cap.read()` in a loop and updates a shared frame under a lock.
+- Self-healing: after repeated read failures (MSMF can stall a USB cam after ~60s) the thread releases and reopens the device with exponential backoff, so a transient glitch or an unplug/replug recovers automatically without a restart.
 - `read()` returns a copy of the latest frame so the main loop and detector never share the same buffer.
 - `stop()` joins the thread and releases the camera.
 

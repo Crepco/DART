@@ -108,12 +108,15 @@ def main():
         # write_timeout guards against an infinite hang when the port opens but
         # nothing drains it (e.g. a phantom Bluetooth COM port, no Arduino).
         ser = serial.Serial(args.port, BAUD_RATE, timeout=0.5, write_timeout=1.0)
-        print("[INFO] Waiting for Arduino reset ...")
-        time.sleep(2.5)
+        # Opening the port asserts DTR, which resets boards like the Uno/Nano.
+        # Clear buffers immediately — BEFORE the Arduino boots — so we don't
+        # discard the one-shot "READY" it prints from setup() ~700ms later.
         ser.reset_input_buffer()
         ser.reset_output_buffer()
+        print("[INFO] Waiting for Arduino reset ...")
         got_ready = False
-        deadline = time.monotonic() + 2.0
+        # Window must comfortably cover the board's reset + boot time.
+        deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             if ser.in_waiting:
                 line = ser.readline().decode("ascii", errors="ignore").strip()
@@ -243,9 +246,10 @@ def main():
         smooth_pan  = CMD_SMOOTH * smooth_pan  + (1.0 - CMD_SMOOTH) * pan_raw
         smooth_tilt = CMD_SMOOTH * smooth_tilt + (1.0 - CMD_SMOOTH) * tilt_raw
 
-        max_step = MAX_CMD_CHANGE_PER_SEC * dt
-        slew_pan  += clamp(smooth_pan  - slew_pan,  -max_step, max_step)
-        slew_tilt += clamp(smooth_tilt - slew_tilt, -max_step, max_step)
+        max_step_pan  = MAX_CMD_CHANGE_PER_SEC_PAN  * dt
+        max_step_tilt = MAX_CMD_CHANGE_PER_SEC_TILT * dt
+        slew_pan  += clamp(smooth_pan  - slew_pan,  -max_step_pan,  max_step_pan)
+        slew_tilt += clamp(smooth_tilt - slew_tilt, -max_step_tilt, max_step_tilt)
 
         pan_cmd  = STOP_PAN  + int(round(slew_pan))
         tilt_cmd = STOP_TILT + int(round(slew_tilt))

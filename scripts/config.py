@@ -1,6 +1,9 @@
 """DART turret — central configuration. All constants live here."""
 
 import pathlib
+import sys
+
+import cv2
 
 
 # ── Camera ──
@@ -8,6 +11,18 @@ CAM_INDEX  = 0
 CAM_WIDTH  = 640
 CAM_HEIGHT = 480
 CAM_FPS    = 15
+
+# MSMF (OpenCV's Windows default) stalls USB webcams after ~60s
+# (grabFrame Error -1072873822); DirectShow is stable. Other OSes use default.
+CAM_BACKEND = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
+CAM_FOURCC  = None     # raw/default format. MJPEG decodes USB glitches into corrupt
+                       # (tiled/grayscale) frames that pass as "valid"; raw drops them
+                       # cleanly. 640x480@15 fits USB 2.0 uncompressed. "MJPG" to force.
+
+CAM_MAX_READ_FAILURES   = 30    # consecutive bad reads before reconnect (~150ms)
+CAM_RECONNECT_DELAY     = 0.5   # backoff base (s)
+CAM_RECONNECT_MAX_DELAY = 5.0   # backoff cap (s)
+CAM_READ_FAIL_SLEEP     = 0.005 # throttle a single failed read (~5ms)
 
 # ── Models ──
 SCRIPT_DIR   = pathlib.Path(__file__).resolve().parent
@@ -44,10 +59,12 @@ D_SMOOTH = 0.70     # derivative low-pass (weight on previous) — stops D-term 
 
 # ── Smoothing ──
 SMOOTH     = 0.90   # centroid EMA (weight on previous value)
-CMD_SMOOTH = 0.80   # servo command EMA — new-sample weight = 1-CMD_SMOOTH ≈ 0.2
+CMD_SMOOTH = 0.85   # servo command EMA — softer onset; new-sample weight = 1-CMD_SMOOTH ≈ 0.15
 
 # ── Slew Rate (servo-offset units / second, dt-scaled) ──
-MAX_CMD_CHANGE_PER_SEC = 25.0
+MAX_CMD_CHANGE_PER_SEC_PAN  = 25.0   # pan slew rate
+MAX_CMD_CHANGE_PER_SEC_TILT = 15.0   # tilt slew — gentler: the camera rides the tilt
+                                     # joint, so slower tilt = less USB-cable flex/shock
 
 # ── Serial ──
 PORT          = "COM3"

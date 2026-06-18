@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
 
-from config import CAM_INDEX, EMBEDDINGS_PATH
+from config import CAM_INDEX, CAM_BACKEND, EMBEDDINGS_PATH
 
 MAX_CAPTURES = 10
 
@@ -29,7 +29,7 @@ def enroll():
         print("[WARN] No name given — aborting.")
         return
 
-    cap = cv2.VideoCapture(CAM_INDEX)
+    cap = cv2.VideoCapture(CAM_INDEX, CAM_BACKEND)
     if not cap.isOpened():
         print(f"[ERROR] Camera {CAM_INDEX} not available.")
         return
