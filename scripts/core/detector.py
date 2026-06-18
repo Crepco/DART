@@ -11,6 +11,52 @@ from config import CAM_HEIGHT, CAM_WIDTH, PERSON_CONF, FACE_CONF
 from auth import FaceClassifier, TrackManager
 
 
+class _ClassifierWorker:
+    """Runs FaceClassifier.classify() off the detection thread so heavy CPU
+    inference never blocks YOLO tracking. Single-slot mailbox, latest-job-wins."""
+
+    def __init__(self, classifier):
+        self._classifier = classifier
+        self._lock    = threading.Lock()
+        self._pending = None   # (track_id, crop)
+        self._result  = None   # (track_id, status)
+        self._busy    = False
+        self._stopped = False
+        self._thread  = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def submit(self, track_id, crop):
+        with self._lock:
+            self._pending = (track_id, crop)
+            self._busy    = True
+
+    def is_idle(self):
+        with self._lock:
+            return not self._busy
+
+    def poll(self):
+        with self._lock:
+            r, self._result = self._result, None
+            return r
+
+    def stop(self):
+        self._stopped = True
+        self._thread.join()
+
+    def _run(self):
+        while not self._stopped:
+            with self._lock:
+                job, self._pending = self._pending, None
+            if job is None:
+                time.sleep(0.005)
+                continue
+            track_id, crop = job
+            status = self._classifier.classify(crop)
+            with self._lock:
+                self._result = (track_id, status)
+                self._busy   = False
+
+
 class YOLODetector:
     def __init__(self, person_model_path: str, face_model_path: str | None):
         self._lock      = threading.Lock()
@@ -42,6 +88,7 @@ class YOLODetector:
 
         self._classifier    = FaceClassifier()
         self._track_manager = TrackManager()
+        self._worker        = _ClassifierWorker(self._classifier)
 
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -58,6 +105,7 @@ class YOLODetector:
     def stop(self):
         self._stopped = True
         self._thread.join()
+        self._worker.stop()
 
     def _run(self):
         locked_id = None
@@ -103,14 +151,18 @@ class YOLODetector:
                 current_ids = [p[4] for p in all_persons]
 
                 self._track_manager.cleanup(current_ids)
+
+                # Apply any finished async classification (skip departed tracks).
+                res = self._worker.poll()
+                if res is not None and res[0] in current_ids:
+                    self._track_manager.update_status(res[0], res[1])
+
+                # Tick every track; collect those due for (re)classification.
+                due = []
                 for (x1, y1, x2, y2, tid) in all_persons:
                     self._track_manager.tick(tid)
                     if self._track_manager.should_classify(tid):
-                        x1c, y1c = max(0, x1), max(0, y1)
-                        x2c, y2c = min(w_f, x2), min(h_f, y2)
-                        crop = frame[y1c:y2c, x1c:x2c]
-                        status = self._classifier.classify(crop)
-                        self._track_manager.update_status(tid, status)
+                        due.append((tid, (x1, y1, x2, y2)))
 
                 auth_statuses = {tid: self._track_manager.get_status(tid)
                                  for tid in current_ids}
@@ -123,6 +175,14 @@ class YOLODetector:
                         locked_id = target_ids[0]
                 elif locked_id not in current_ids:
                     locked_id = current_ids[0]
+
+                # Hand one crop to the worker if it's free — prioritise the target.
+                if due and self._worker.is_idle():
+                    tid, (x1, y1, x2, y2) = next((d for d in due if d[0] == locked_id), due[0])
+                    x1c, y1c = max(0, x1), max(0, y1)
+                    x2c, y2c = min(w_f, x2), min(h_f, y2)
+                    crop = frame[y1c:y2c, x1c:x2c].copy()
+                    self._worker.submit(tid, crop)
 
                 for (x1, y1, x2, y2, tid) in all_persons:
                     if tid == locked_id:
