@@ -29,7 +29,7 @@ AUTH_COLS = {"AUTHORIZED":   COL_AUTHORIZED,
 def draw_hud(frame, status, pan_cmd, tilt_cmd,
              smooth_cx, smooth_cy,
              person_box, all_persons, faces, track_id,
-             w_f, h_f, error_x, error_y, fire, locked, auth_statuses):
+             w_f, h_f, error_x, error_y, fire, locked, locked_face_auth, auth_statuses):
 
     tracking = (status == "TRACKING")
     bar_col  = COL_TRACKING if tracking else COL_NO_BODY
@@ -61,14 +61,20 @@ def draw_hud(frame, status, pan_cmd, tilt_cmd,
     cv2.rectangle(overlay, (0, 0), (w_f, 40), (10, 10, 10), -1)
     cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
 
-    fire_label = "FIRING" if fire else ("ARMED" if locked else "SAFE")
-    fire_col   = COL_FIRING if fire else (COL_ARMED if locked else (120, 120, 120))
+    if fire:
+        fire_label, fire_col = "FIRING", COL_FIRING
+    elif locked and locked_face_auth == "UNAUTHORIZED":
+        fire_label, fire_col = "ARMED", COL_ARMED
+    elif locked and locked_face_auth == "AUTHORIZED":
+        fire_label, fire_col = "SAFE/AUTH", COL_AUTHORIZED
+    else:
+        fire_label, fire_col = "SAFE", (120, 120, 120)
     tid_label  = f"  ID={track_id}" if track_id is not None else ""
     bar_text   = (f"[{status}]{tid_label}   Pan {pan_cmd:3d}  Tilt {tilt_cmd:3d}"
                   f"   Err ({int(error_x):+d}, {int(error_y):+d})")
     cv2.putText(frame, bar_text, (10, 27),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, bar_col, 2, cv2.LINE_AA)
-    cv2.putText(frame, fire_label, (w_f - 110, 27),
+    cv2.putText(frame, fire_label, (w_f - 140, 27),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, fire_col, 2, cv2.LINE_AA)
 
     arm = 10 if tracking else 18
@@ -182,6 +188,7 @@ def main():
         all_persons   = det["all_persons"]
         faces         = det["faces"]
         auth_statuses = det["auth_statuses"]
+        locked_face_auth = det.get("locked_face_auth", "UNKNOWN")
 
         pan_raw  = 0.0
         tilt_raw = 0.0
@@ -207,7 +214,13 @@ def main():
 
             # Lock-on detection uses the true centre error (hysteresis + dwell).
             lock_err = math.hypot(error_x, error_y)
-            if fire:
+            # Auth gate: only an UNAUTHORIZED target may ever arm/fire. For an
+            # AUTHORIZED or UNKNOWN target, hold fire and don't accrue dwell —
+            # the geometric dwell + hysteresis below is otherwise unchanged.
+            if locked_face_auth != "UNAUTHORIZED":
+                fire = False
+                lock_count = 0
+            elif fire:
                 if lock_err > LOCK_RELEASE_RADIUS:
                     fire = False
                     lock_count = 0
@@ -257,7 +270,7 @@ def main():
         draw_hud(frame, status, pan_cmd, tilt_cmd,
                  smooth_cx, smooth_cy,
                  person_box, all_persons, faces, track_id,
-                 w_f, h_f, error_x, error_y, fire, locked, auth_statuses)
+                 w_f, h_f, error_x, error_y, fire, locked, locked_face_auth, auth_statuses)
 
         if ser:
             time_since_send = now - last_send

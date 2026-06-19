@@ -15,6 +15,22 @@ from auth import FaceClassifier, TrackManager
 DEVICE = 0 if torch.cuda.is_available() else "cpu"
 
 
+def _iou(boxA, boxB) -> float:
+    """Intersection-over-union of two (x1, y1, x2, y2) boxes."""
+    ax1, ay1, ax2, ay2 = boxA
+    bx1, by1, bx2, by2 = boxB
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter == 0:
+        return 0.0
+    areaA = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    areaB = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = areaA + areaB - inter
+    return inter / union if union > 0 else 0.0
+
+
 class _ClassifierWorker:
     """Runs FaceClassifier.classify() off the detection thread so heavy CPU
     inference never blocks YOLO tracking. Single-slot mailbox, latest-job-wins."""
@@ -72,6 +88,7 @@ class YOLODetector:
             "all_persons":  [],
             "faces":        [],
             "auth_statuses": {},
+            "locked_face_auth": "UNKNOWN",
         }
         self._stopped = False
 
@@ -140,6 +157,7 @@ class YOLODetector:
             person_box  = None
             track_id    = None
             auth_statuses = {}
+            locked_face_auth = "UNKNOWN"
 
             h_f, w_f = frame.shape[:2]
 
@@ -172,14 +190,23 @@ class YOLODetector:
                 auth_statuses = {tid: self._track_manager.get_status(tid)
                                  for tid in current_ids}
 
-                # Prefer UNAUTHORIZED tracks as the locked target.
-                target_ids = [tid for tid in current_ids
-                              if self._track_manager.is_target(tid)]
-                if target_ids:
-                    if locked_id not in target_ids:
-                        locked_id = target_ids[0]
-                elif locked_id not in current_ids:
-                    locked_id = current_ids[0]
+                # Sticky target acquisition: hold the current threat; otherwise
+                # prefer UNAUTHORIZED, fall back to UNKNOWN, never lock AUTHORIZED.
+                unauthorized_ids = [tid for tid in current_ids
+                                    if self._track_manager.get_status(tid) == "UNAUTHORIZED"]
+                unknown_ids = [tid for tid in current_ids
+                               if self._track_manager.get_status(tid) == "UNKNOWN"]
+
+                keep_current = (locked_id in current_ids
+                                and self._track_manager.get_status(locked_id) != "AUTHORIZED")
+                if keep_current:
+                    pass                          # hold the current threat
+                elif unauthorized_ids:
+                    locked_id = unauthorized_ids[0]
+                elif unknown_ids:
+                    locked_id = unknown_ids[0]
+                else:
+                    locked_id = current_ids[0]    # only AUTHORIZED present — no threat
 
                 # Hand one crop to the worker if it's free — prioritise the target.
                 if due and self._worker.is_idle():
@@ -208,6 +235,15 @@ class YOLODetector:
                 except Exception:
                     pass
 
+            # Link the locked person to the face we'd aim at: only a face that
+            # actually overlaps the locked person's box counts. Fire is therefore
+            # gated on the *target's* auth status (no overlapping face → UNKNOWN
+            # → fire inhibited downstream).
+            if person_box is not None and track_id is not None and faces:
+                best_face = max(faces, key=lambda f: _iou(f, person_box))
+                if _iou(best_face, person_box) > 0.0:
+                    locked_face_auth = self._track_manager.get_status(track_id)
+
             with self._lock:
                 self._result = {
                     "person_box":   person_box,
@@ -215,6 +251,7 @@ class YOLODetector:
                     "all_persons":  all_persons,
                     "faces":        faces,
                     "auth_statuses": auth_statuses,
+                    "locked_face_auth": locked_face_auth,
                 }
 
 
