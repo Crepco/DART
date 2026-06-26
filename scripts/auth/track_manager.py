@@ -31,6 +31,11 @@ class TrackManager:
 
     def should_classify(self, track_id) -> bool:
         state = self.get_or_create(track_id)
+        # Locked: once confirmed UNAUTHORIZED, the verdict is permanent for this
+        # track's lifetime — never re-classify, so motion/blur can't churn a known
+        # target back to UNKNOWN and reset the fire dwell.
+        if state.auth_status == "UNAUTHORIZED":
+            return False
         # Unconfirmed tracks classify every frame so a new face resolves fast; once a
         # status is locked in, fall back to the slow steady-state re-check cadence.
         cadence = (CLASSIFY_EVERY_N_FRAMES_UNCONFIRMED
@@ -39,6 +44,12 @@ class TrackManager:
 
     def update_status(self, track_id, new_status):
         state = self.get_or_create(track_id)
+
+        # Locked: an UNAUTHORIZED verdict is permanent for this track's lifetime.
+        # Ignores even a stale classifier result that was in-flight when the track
+        # was confirmed UNAUTHORIZED.
+        if state.auth_status == "UNAUTHORIZED":
+            return
 
         # UNKNOWN means "no usable reading this cycle" — hold the last locked status.
         if new_status == "UNKNOWN":
