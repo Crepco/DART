@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DART — select build</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="landing">
+  <main class="wrap">
+    <header class="brand">
+      <div class="reticle" aria-hidden="true"></div>
+      <h1>DART</h1>
+      <p class="tag">Auto-aim vision turret · choose your build</p>
+    </header>
+
+    <div class="camera-pick">
+      <label for="cameraSelect">Camera</label>
+      <select id="cameraSelect"><option value="">default</option></select>
+      <button type="button" id="refreshCams" title="Re-scan cameras">⟳ scan</button>
+    </div>
+
+    <section class="cards">
+      <form class="card flowstate" method="post" action="{{ url_for('start') }}">
+        <input type="hidden" name="mode" value="flowstate">
+        <input type="hidden" name="camera" class="cameraField">
+        <div class="card-num">01</div>
+        <h2>FlowState&nbsp;+&nbsp;DART</h2>
+        <p>EEG focus tracking arms the turret. Stay focused and you're safe —
+           <strong>zone out and DART fires</strong>. BioAmp on <code>A0</code>,
+           zone-out status on <code>pin&nbsp;12</code>.</p>
+        <ul class="meta">
+          <li>Targets: nearest person (any auth)</li>
+          <li>Fires: while focus &lt; threshold</li>
+          <li>No EEG? Runs on bundled sample data</li>
+        </ul>
+        <button type="submit">Launch FlowState + DART →</button>
+      </form>
+
+      <form class="card dart" method="post" action="{{ url_for('start') }}">
+        <input type="hidden" name="mode" value="dart">
+        <input type="hidden" name="camera" class="cameraField">
+        <div class="card-num">02</div>
+        <h2>Just DART</h2>
+        <p>The original security turret. Face authorization gates the trigger —
+           it tracks everyone but <strong>only fires at UNAUTHORIZED targets</strong>.</p>
+        <ul class="meta">
+          <li>Targets: UNAUTHORIZED persons</li>
+          <li>Fires: on a dwelled lock-on</li>
+          <li>FlowState not involved</li>
+        </ul>
+        <button type="submit">Launch Just DART →</button>
+      </form>
+    </section>
+
+    <footer class="foot">
+      <span class="dot"></span> One Arduino Uno R3 · servos pan&nbsp;10 / tilt&nbsp;9 / trigger&nbsp;8 · EEG A0 · status pin&nbsp;12
+    </footer>
+  </main>
+  <script src="{{ url_for('static', filename='landing.js') }}"></script>
+</body>
+</html>

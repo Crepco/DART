@@ -62,7 +62,13 @@ class _ClassifierWorker:
 
 
 class YOLODetector:
-    def __init__(self, person_model_path: str, face_model_path: str | None):
+    def __init__(self, person_model_path: str, face_model_path: str | None,
+                 target_policy: str = "unauthorized"):
+        # target_policy selects which persons are valid lock targets:
+        #   "unauthorized" (mode 2 / default) — only confirmed-UNAUTHORIZED persons,
+        #   "any"          (mode 1)           — the closest person regardless of auth,
+        # because FlowState mode fires on zone-out, not on authorization.
+        self._target_policy = target_policy if target_policy in ("unauthorized", "any") else "unauthorized"
         self._lock      = threading.Lock()
         self._frame     = None
         self._new_frame = False
@@ -180,15 +186,18 @@ class YOLODetector:
                 # 2+ UNAUTHORIZED, lock the closest — largest bbox area
                 # (x2-x1)*(y2-y1), i.e. nearest the camera — which is
                 # deterministic and so doesn't oscillate between targets.
-                unauthorized = [(x1, y1, x2, y2, tid)
-                                for (x1, y1, x2, y2, tid) in all_persons
-                                if self._track_manager.get_status(tid) == "UNAUTHORIZED"]
-                if not unauthorized:
-                    locked_id = None
-                elif len(unauthorized) == 1:
-                    locked_id = unauthorized[0][4]
+                if self._target_policy == "any":
+                    candidates = all_persons          # mode 1: lock the nearest person
                 else:
-                    locked_id = max(unauthorized,
+                    candidates = [(x1, y1, x2, y2, tid)
+                                  for (x1, y1, x2, y2, tid) in all_persons
+                                  if self._track_manager.get_status(tid) == "UNAUTHORIZED"]
+                if not candidates:
+                    locked_id = None
+                elif len(candidates) == 1:
+                    locked_id = candidates[0][4]
+                else:
+                    locked_id = max(candidates,
                                     key=lambda p: (p[2] - p[0]) * (p[3] - p[1]))[4]
 
                 # Hand one crop to the worker if it's free — prioritise the target.

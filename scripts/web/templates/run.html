@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DART — {{ 'FlowState + DART' if mode == 'flowstate' else 'Just DART' }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="run" data-mode="{{ mode }}">
+  <header class="topbar">
+    <div class="brand-sm"><span class="reticle-sm"></span> DART</div>
+    <div class="mode-pill {{ mode }}">{{ 'FLOWSTATE + DART' if mode == 'flowstate' else 'JUST DART' }}</div>
+    <form method="post" action="{{ url_for('stop') }}" id="stopForm">
+      <button class="stop" type="submit">■ STOP</button>
+    </form>
+  </header>
+
+  <main class="stage">
+    <div class="feed">
+      <img id="video" src="{{ url_for('video_feed') }}" alt="DART live feed">
+      <div id="banner" class="banner hidden"></div>
+    </div>
+
+    <aside class="panel">
+      <div class="row"><span class="k">Status</span><span class="v" id="status">—</span></div>
+      <div class="row"><span class="k">Serial</span><span class="v" id="serial">—</span></div>
+      <div class="row"><span class="k">FPS</span><span class="v" id="fps">—</span></div>
+      <div class="row"><span class="k">Persons</span><span class="v" id="persons">—</span></div>
+      <div class="row"><span class="k">Target ID</span><span class="v" id="trackid">—</span></div>
+      <div class="row"><span class="k">Pan / Tilt</span><span class="v" id="pantilt">—</span></div>
+      <div class="row cam-row">
+        <span class="k">Camera</span>
+        <span class="v"><select id="camSelect" class="cam-select"><option>—</option></select></span>
+      </div>
+      <div class="cam-msg" id="camMsg"></div>
+
+      <div class="fire-state" id="fireState" data-fire="0">
+        <span id="fireLabel">SAFE</span>
+      </div>
+
+      {% if mode == 'flowstate' %}
+      <div class="focus-block">
+        <div class="row"><span class="k">Focus source</span><span class="v" id="focusSource">—</span></div>
+        <div class="row"><span class="k">Score mode</span><span class="v" id="scoreMode">—</span></div>
+        <div class="focus-gauge">
+          <div class="focus-num"><span id="focusVal">--</span><small>/100</small></div>
+          <div class="focus-bar"><div class="focus-fill" id="focusFill"></div>
+            <div class="focus-thresh"></div></div>
+          <div class="focus-state" id="focusState">warming up…</div>
+        </div>
+      </div>
+      {% endif %}
+    </aside>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
