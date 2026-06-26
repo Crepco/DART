@@ -196,7 +196,7 @@ def main():
 
         target_box = select_face(faces, smooth_cx, smooth_cy)
 
-        if target_box is not None:
+        if target_box is not None and person_box is not None:
             no_body_count = 0
             x1, y1, x2, y2 = target_box
             raw_cx = (x1 + x2) // 2

@@ -190,23 +190,22 @@ class YOLODetector:
                 auth_statuses = {tid: self._track_manager.get_status(tid)
                                  for tid in current_ids}
 
-                # Sticky target acquisition: hold the current threat; otherwise
-                # prefer UNAUTHORIZED, fall back to UNKNOWN, never lock AUTHORIZED.
-                unauthorized_ids = [tid for tid in current_ids
-                                    if self._track_manager.get_status(tid) == "UNAUTHORIZED"]
-                unknown_ids = [tid for tid in current_ids
-                               if self._track_manager.get_status(tid) == "UNKNOWN"]
-
-                keep_current = (locked_id in current_ids
-                                and self._track_manager.get_status(locked_id) != "AUTHORIZED")
-                if keep_current:
-                    pass                          # hold the current threat
-                elif unauthorized_ids:
-                    locked_id = unauthorized_ids[0]
-                elif unknown_ids:
-                    locked_id = unknown_ids[0]
+                # Stateless target selection: only confirmed UNAUTHORIZED persons
+                # are valid targets. None -> hold (person_box stays None) so the
+                # turret waits rather than chasing UNKNOWN/AUTHORIZED tracks. With
+                # 2+ UNAUTHORIZED, lock the closest — largest bbox area
+                # (x2-x1)*(y2-y1), i.e. nearest the camera — which is
+                # deterministic and so doesn't oscillate between targets.
+                unauthorized = [(x1, y1, x2, y2, tid)
+                                for (x1, y1, x2, y2, tid) in all_persons
+                                if self._track_manager.get_status(tid) == "UNAUTHORIZED"]
+                if not unauthorized:
+                    locked_id = None
+                elif len(unauthorized) == 1:
+                    locked_id = unauthorized[0][4]
                 else:
-                    locked_id = current_ids[0]    # only AUTHORIZED present — no threat
+                    locked_id = max(unauthorized,
+                                    key=lambda p: (p[2] - p[0]) * (p[3] - p[1]))[4]
 
                 # Hand one crop to the worker if it's free — prioritise the target.
                 if due and self._worker.is_idle():
