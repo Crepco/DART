@@ -248,17 +248,23 @@ def main():
             status = "TRACKING"
 
         elif smooth_cx is not None and no_body_count < FIRE_COAST_FRAMES:
-            # Coast through brief face-detection dropouts (motion blur while the
-            # turret moves). Keep evaluating lock/dwell against the held centroid
-            # so the trigger isn't reset every blurred frame; hold motion at zero
-            # so the turret settles via the command-EMA + slew limiter rather than
-            # driving blind. Fire stays gated by locked_face_auth (only while the
-            # person track survives — see detector). Don't reset the PID here.
+            # Coast through brief target loss during a tilt whip (motion blur drops
+            # the face — and sometimes the person box — for a few frames). Hold
+            # motion at zero so the turret settles via the command-EMA + slew
+            # limiter rather than driving blind; don't reset the PID here.
+            #
+            # Don't let a momentary no-target frame reset the dwell:
+            #   • person still tracked, face blurred out  -> keep accruing dwell
+            #   • whole target lost this frame (auth UNKNOWN) -> HOLD fire/lock_count
+            # lock_count is only reset in the lost branch below, after
+            # FIRE_COAST_FRAMES consecutive no-target frames — the N-frame grace.
             no_body_count += 1
             error_x = smooth_cx - cx_frame
             error_y = smooth_cy - cy_frame
-            fire, lock_count, locked = update_fire_state(
-                error_x, error_y, locked_face_auth, fire, lock_count)
+            if locked_face_auth == "UNAUTHORIZED":
+                fire, lock_count, locked = update_fire_state(
+                    error_x, error_y, locked_face_auth, fire, lock_count)
+            # else: hold fire / lock_count / locked unchanged
             error_x = error_y = 0.0
             status = "TRACKING"
 
