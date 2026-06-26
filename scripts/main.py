@@ -21,6 +21,24 @@ def apply_output_deadband(value: float, band: float) -> float:
     return 0.0 if abs(value) < band else value
 
 
+def update_fire_state(error_x, error_y, locked_face_auth, fire, lock_count):
+    """Lock-on + auth fire gate. Returns (fire, lock_count, locked).
+
+    Auth gate: only an UNAUTHORIZED target may ever arm/fire. For an AUTHORIZED
+    or UNKNOWN target, hold fire and don't accrue dwell. Dwell + hysteresis stop
+    the trigger chattering when the error hovers at the boundary.
+    """
+    lock_err = math.hypot(error_x, error_y)
+    if locked_face_auth != "UNAUTHORIZED":
+        return False, 0, lock_err <= LOCK_ON_RADIUS
+    if fire:
+        if lock_err > LOCK_RELEASE_RADIUS:
+            return False, 0, lock_err <= LOCK_ON_RADIUS
+        return True, lock_count, lock_err <= LOCK_ON_RADIUS
+    lock_count = lock_count + 1 if lock_err <= LOCK_ON_RADIUS else 0
+    return lock_count >= FIRE_DWELL_FRAMES, lock_count, lock_err <= LOCK_ON_RADIUS
+
+
 AUTH_COLS = {"AUTHORIZED":   COL_AUTHORIZED,
              "UNAUTHORIZED": COL_UNAUTHORIZED,
              "UNKNOWN":      COL_AUTH_UNKNOWN}
@@ -213,22 +231,8 @@ def main():
             error_y = smooth_cy - cy_frame
 
             # Lock-on detection uses the true centre error (hysteresis + dwell).
-            lock_err = math.hypot(error_x, error_y)
-            # Auth gate: only an UNAUTHORIZED target may ever arm/fire. For an
-            # AUTHORIZED or UNKNOWN target, hold fire and don't accrue dwell —
-            # the geometric dwell + hysteresis below is otherwise unchanged.
-            if locked_face_auth != "UNAUTHORIZED":
-                fire = False
-                lock_count = 0
-            elif fire:
-                if lock_err > LOCK_RELEASE_RADIUS:
-                    fire = False
-                    lock_count = 0
-            else:
-                lock_count = lock_count + 1 if lock_err <= LOCK_ON_RADIUS else 0
-                if lock_count >= FIRE_DWELL_FRAMES:
-                    fire = True
-            locked = lock_err <= LOCK_ON_RADIUS
+            fire, lock_count, locked = update_fire_state(
+                error_x, error_y, locked_face_auth, fire, lock_count)
 
             if abs(error_x) < INPUT_DEADBAND:
                 error_x = 0.0
@@ -241,6 +245,21 @@ def main():
             pan_raw  = apply_output_deadband(pan_pid,  OUTPUT_DEADBAND)
             tilt_raw = apply_output_deadband(tilt_pid, OUTPUT_DEADBAND)
 
+            status = "TRACKING"
+
+        elif smooth_cx is not None and no_body_count < FIRE_COAST_FRAMES:
+            # Coast through brief face-detection dropouts (motion blur while the
+            # turret moves). Keep evaluating lock/dwell against the held centroid
+            # so the trigger isn't reset every blurred frame; hold motion at zero
+            # so the turret settles via the command-EMA + slew limiter rather than
+            # driving blind. Fire stays gated by locked_face_auth (only while the
+            # person track survives — see detector). Don't reset the PID here.
+            no_body_count += 1
+            error_x = smooth_cx - cx_frame
+            error_y = smooth_cy - cy_frame
+            fire, lock_count, locked = update_fire_state(
+                error_x, error_y, locked_face_auth, fire, lock_count)
+            error_x = error_y = 0.0
             status = "TRACKING"
 
         else:

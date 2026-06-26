@@ -32,7 +32,10 @@ class FaceClassifier:
             name="buffalo_sc",
             providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
         )
-        self.app.prepare(ctx_id=0, det_size=(320, 320))
+        # det_size drives the InsightFace detector's input resolution and is the
+        # dominant per-classify CPU cost. 256 is noticeably faster than 320 and
+        # still resolves faces inside the (already cropped) person box.
+        self.app.prepare(ctx_id=0, det_size=(256, 256))
         self._warn_if_cpu_fallback()
 
         self.db = {}
