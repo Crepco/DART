@@ -27,6 +27,16 @@ pyserial==3.5
 # onnxruntime-gpu runs InsightFace classify() on CUDA; it falls back to CPU if the
 # GPU provider / cuDNN libs are unavailable. Swap to plain `onnxruntime` on a
 # CPU-only host to avoid the larger GPU download.
+#
+# IMPORTANT (GPU hosts): insightface depends on plain `onnxruntime`, so pip ALSO
+# installs the CPU build here. The CPU build shadows onnxruntime-gpu and silently
+# forces classify() onto CPU. After installing, remove it so only the GPU build
+# remains (it provides the same `import onnxruntime`):
+#     pip uninstall -y onnxruntime
+# If that also breaks the import (shared files), reinstall the GPU build clean:
+#     pip uninstall -y onnxruntime onnxruntime-gpu && pip install onnxruntime-gpu==1.26.0
+# The CUDA DLLs onnxruntime-gpu needs (cublasLt64_12, cudnn64_9, ...) are supplied
+# by the torch+cu126 wheel; auth/classifier.py adds torch/lib to the DLL path.
 insightface
 onnxruntime-gpu==1.26.0
 
