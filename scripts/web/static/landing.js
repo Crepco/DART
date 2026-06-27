@@ -1,5 +1,5 @@
-// Landing page: scan for connected cameras and feed the choice into whichever
-// launch form (FlowState+DART or Just DART) gets submitted.
+// Landing page: scan for connected cameras + Arduino serial ports and feed the
+// choices into whichever launch form (FlowState+DART or Just DART) gets submitted.
 
 const sel = document.getElementById("cameraSelect");
 const fields = () => document.querySelectorAll(".cameraField");
@@ -32,3 +32,35 @@ async function loadCams() {
 sel.addEventListener("change", sync);
 document.getElementById("refreshCams").addEventListener("click", loadCams);
 loadCams();
+
+// ── Arduino serial port ───────────────────────────────────────────────────
+const portSel = document.getElementById("portSelect");
+const portFields = () => document.querySelectorAll(".portField");
+
+function syncPort() {
+  const v = portSel.value;
+  portFields().forEach((f) => { f.value = v; });
+}
+
+async function loadPorts() {
+  portSel.innerHTML = '<option value="">scanning…</option>';
+  let def = "";
+  try {
+    const j = await (await fetch("/ports", { cache: "no-store" })).json();
+    def = j.default || "";
+    portSel.innerHTML = `<option value="">default (${def || "config"})</option>`;
+    (j.ports || []).forEach((p) => {
+      const o = document.createElement("option");
+      o.value = p.device;
+      o.textContent = p.desc && p.desc !== p.device ? `${p.device} — ${p.desc}` : p.device;
+      portSel.appendChild(o);
+    });
+  } catch (e) {
+    portSel.innerHTML = '<option value="">default</option>';
+  }
+  syncPort();
+}
+
+portSel.addEventListener("change", syncPort);
+document.getElementById("refreshPorts").addEventListener("click", loadPorts);
+loadPorts();

@@ -20,10 +20,17 @@
       <button type="button" id="refreshCams" title="Re-scan cameras">⟳ scan</button>
     </div>
 
+    <div class="camera-pick">
+      <label for="portSelect">Arduino</label>
+      <select id="portSelect"><option value="">default</option></select>
+      <button type="button" id="refreshPorts" title="Re-scan serial ports">⟳ scan</button>
+    </div>
+
     <section class="cards">
       <form class="card flowstate" method="post" action="{{ url_for('start') }}">
         <input type="hidden" name="mode" value="flowstate">
         <input type="hidden" name="camera" class="cameraField">
+        <input type="hidden" name="port" class="portField">
         <div class="card-num">01</div>
         <h2>FlowState&nbsp;+&nbsp;DART</h2>
         <p>EEG focus tracking arms the turret. Stay focused and you're safe —
@@ -39,6 +46,7 @@
       <form class="card dart" method="post" action="{{ url_for('start') }}">
         <input type="hidden" name="mode" value="dart">
         <input type="hidden" name="camera" class="cameraField">
+        <input type="hidden" name="port" class="portField">
         <div class="card-num">02</div>
         <h2>Just DART</h2>
         <p>The original security turret. Face authorization gates the trigger —

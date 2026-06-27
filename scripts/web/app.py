@@ -59,6 +59,20 @@ def _probe_cameras(skip=None):
     return sorted(set(found))
 
 
+def _probe_ports():
+    """Best-effort list of serial ports the Arduino might be on. Returns dicts of
+    {device, desc} (e.g. {"COM5", "Arduino Uno (COM5)"}) so the UI can show a hint."""
+    try:
+        from serial.tools import list_ports
+    except Exception:
+        return []
+    out = []
+    for p in list_ports.comports():
+        out.append({"device": p.device, "desc": p.description or p.device})
+    out.sort(key=lambda d: d["device"])
+    return out
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -70,12 +84,13 @@ def start():
     mode = request.form.get("mode", "dart")
     mode = "flowstate" if mode == "flowstate" else "dart"
     camera = request.form.get("camera", type=int)   # None -> runner uses config CAM_INDEX
+    port = request.form.get("port") or None          # None/"" -> runner uses config PORT
     from .runner import DartRunner   # lazy: pulls in torch/YOLO only when actually starting
 
     with _runner_lock:
         if _runner is not None:
             _runner.stop()
-        _runner = DartRunner(mode=mode, camera=camera)
+        _runner = DartRunner(mode=mode, camera=camera, port=port)
         _runner.start()
     return redirect(url_for("run_view"))
 
@@ -89,6 +104,14 @@ def cameras():
     if cur is not None and cur not in idxs:
         idxs = sorted(set(idxs + [cur]))
     return jsonify({"cameras": idxs, "current": cur})
+
+
+@app.route("/ports")
+def ports():
+    """Serial ports for the landing page's Arduino picker. `default` is the config
+    fallback used when no port is chosen (the form sends an empty value)."""
+    from config import PORT
+    return jsonify({"ports": _probe_ports(), "default": PORT})
 
 
 @app.route("/set_camera", methods=["POST"])

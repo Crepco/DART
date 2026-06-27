@@ -38,7 +38,7 @@ STOP_PAN    = 90
 STOP_TILT   = 90
 MAX_SPEED   = 25
 INVERT_PAN  = -1
-INVERT_TILT = -1
+INVERT_TILT = 1
 
 # ── Trigger (MG90) — angles live on the Arduino; mirrored here for parity ──
 TRIGGER_REST_ANGLE = 150
@@ -54,7 +54,7 @@ OUTPUT_DEADBAND = 4
 INPUT_DEADBAND  = 30   # px stop-zone — must be < LOCK_ON_RADIUS so it settles inside fire zone
 
 # ── PID Gains (tuning guide: docs/ARCHITECTURE.md) ──
-PAN_KP,  PAN_KI,  PAN_KD  = 0.28, 0.001, 0.07
+PAN_KP,  PAN_KI,  PAN_KD  = 0.075, 0.001, 0.15
 TILT_KP, TILT_KI, TILT_KD = 0.04, 0.001, 0.09
 INTEGRAL_CLAMP = 10.0
 D_SMOOTH = 0.70     # derivative low-pass (weight on previous) — stops D-term amplifying detection noise
