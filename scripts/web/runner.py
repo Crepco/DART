@@ -351,6 +351,11 @@ class DartRunner:
             tilt_cmd = STOP_TILT + int(round(slew_tilt))
 
             if self.mode == "flowstate":
+                # FlowState: the student is stationary, so don't track — hold the turret
+                # still (STOP = no motion on the continuous-rotation servos). The fire flag
+                # still rides the same P###T###F# packet, so the trigger works; only aiming
+                # is disabled. (dart mode keeps full pan/tilt tracking.)
+                pan_cmd, tilt_cmd = STOP_PAN, STOP_TILT
                 fire_label, fire_col = _fire_label_focus(fire, locked, zone_out)
             else:
                 fire_label, fire_col = _fire_label_dart(fire, locked, locked_face_auth)
