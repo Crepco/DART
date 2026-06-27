@@ -4,7 +4,7 @@ DART and FlowState now share ONE board on ONE serial port, so they must share on
 serial connection too. This class owns the `serial.Serial`, runs a reader thread,
 and multiplexes the two data streams that cross the wire:
 
-  host -> R3 :  "P###T###F#Z#\\n"  servo pan/tilt + fire flag (+ zone-out flag for pin 12)
+  host -> R3 :  "P###T###F#\\n"    servo pan/tilt + fire flag
                 "S#\\n"             EEG stream enable(1)/disable(0)
   R3   -> host: "READY\\n"          one-shot boot handshake
                 "E####\\n"          one raw EEG ADC sample (0..1023), only while streaming
@@ -29,16 +29,11 @@ def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
-def build_command(pan: int, tilt: int, fire: bool, zone: bool = False) -> bytes:
-    """`P###T###F#Z#` — pan/tilt clamped to the safe speed window, fire + zone flags.
-
-    `Z` mirrors the FlowState zone-out state onto R3 pin 12 (status LED/buzzer). It is
-    independent of `F` (the trigger servo) so pin 12 can show "armed because you zoned
-    out" even before a lock dwells into an actual shot.
-    """
+def build_command(pan: int, tilt: int, fire: bool) -> bytes:
+    """`P###T###F#` — pan/tilt clamped to the safe speed window, plus the fire flag."""
     p = _clamp(pan,  STOP_PAN  - MAX_SPEED, STOP_PAN  + MAX_SPEED)
     t = _clamp(tilt, STOP_TILT - MAX_SPEED, STOP_TILT + MAX_SPEED)
-    return f"P{p:03d}T{t:03d}F{1 if fire else 0}Z{1 if zone else 0}\n".encode("ascii")
+    return f"P{p:03d}T{t:03d}F{1 if fire else 0}\n".encode("ascii")
 
 
 class SerialLink:
@@ -148,9 +143,9 @@ class SerialLink:
             except serial.SerialException:
                 pass
 
-    def send_command(self, pan: int, tilt: int, fire: bool, zone: bool = False,
+    def send_command(self, pan: int, tilt: int, fire: bool,
                      flush: bool = False) -> None:
-        self._write(build_command(pan, tilt, fire, zone), flush=flush)
+        self._write(build_command(pan, tilt, fire), flush=flush)
 
     def set_stream(self, enable: bool) -> None:
         """Enable/disable the R3's EEG sample stream (off by default => mode 2 quiet)."""
@@ -158,7 +153,7 @@ class SerialLink:
         self._write(f"S{1 if enable else 0}\n".encode("ascii"), flush=True)
 
     def send_stop(self) -> None:
-        self._write(build_command(STOP_PAN, STOP_TILT, False, False), flush=True)
+        self._write(build_command(STOP_PAN, STOP_TILT, False), flush=True)
 
     # ------------------------------------------------------------------- close
     def close(self) -> None:

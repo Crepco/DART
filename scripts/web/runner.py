@@ -11,8 +11,7 @@ Two modes (chosen on the landing page):
   * "dart"      — mode 2: unchanged behaviour. Locks UNAUTHORIZED persons; fires on a
                   dwelled lock (auth gate). FlowState is not involved.
   * "flowstate" — mode 1: locks the nearest person (any auth) and fires only while the
-                  FlowState focus bridge reports a zone-out. The zone-out flag is also
-                  sent to the R3 (Z token -> pin 12 status output).
+                  FlowState focus bridge reports a zone-out.
 
 The non-trivial lock/dwell/PID/serial-cadence logic is shared with main.py; only the
 fire *gate* and the target policy differ per mode.
@@ -253,7 +252,7 @@ class DartRunner:
         last_time = time.monotonic()
         error_x = error_y = 0.0
         last_sent_pan, last_sent_tilt = STOP_PAN, STOP_TILT
-        last_sent_fire = last_sent_zone = False
+        last_sent_fire = False
         fire = locked = False
         lock_count = 0
         fps = 0.0
@@ -351,9 +350,6 @@ class DartRunner:
             pan_cmd  = STOP_PAN  + int(round(slew_pan))
             tilt_cmd = STOP_TILT + int(round(slew_tilt))
 
-            # zone token drives R3 pin 12 (mode 1 only).
-            zone_flag = bool(zone_out) if self.mode == "flowstate" else False
-
             if self.mode == "flowstate":
                 fire_label, fire_col = _fire_label_focus(fire, locked, zone_out)
             else:
@@ -372,15 +368,14 @@ class DartRunner:
             # ── serial send (same cadence as main.py) ──
             if self.link:
                 time_since_send = now - last_send
-                changed = (fire != last_sent_fire or zone_flag != last_sent_zone)
+                changed = (fire != last_sent_fire)
                 moved   = (pan_cmd != last_sent_pan or tilt_cmd != last_sent_tilt)
                 if (changed
                         or (moved and time_since_send >= SEND_INTERVAL)
                         or (time_since_send >= HEARTBEAT_INTERVAL)):
-                    self.link.send_command(pan_cmd, tilt_cmd, fire, zone_flag,
-                                           flush=changed)
+                    self.link.send_command(pan_cmd, tilt_cmd, fire, flush=changed)
                     last_sent_pan, last_sent_tilt = pan_cmd, tilt_cmd
-                    last_sent_fire, last_sent_zone = fire, zone_flag
+                    last_sent_fire = fire
                     last_send = now
 
             ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])

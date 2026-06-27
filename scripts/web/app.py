@@ -2,7 +2,7 @@
 
 Landing page lets you pick the build:
   1) FlowState + DART  -> mode "flowstate": tracks the nearest person and fires when the
-     EEG focus bridge reports a zone-out (also lights R3 pin 12 via the Z token).
+     EEG focus bridge reports a zone-out.
   2) Just DART         -> mode "dart": the original security turret (fire UNAUTHORIZED).
 
 The heavy DART runner (camera + YOLO + torch) is imported lazily on /start so the landing

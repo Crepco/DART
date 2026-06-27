@@ -67,8 +67,8 @@ python scripts/run_web.py        # then open http://127.0.0.1:5000
 1. **FlowState + DART** — the turret tracks the **nearest person (any auth)** and fires
    only while the [FlowState](https://github.com/Crepco/flowstate) EEG focus bridge reports
    a **zone-out** (sustained focus below threshold). *Stay focused → safe; zone out → darted.*
-   The zone-out state is also mirrored to **R3 pin 12** (status LED/buzzer). With no EEG
-   hardware connected it runs on bundled sample data so the focus gauge and fire logic still demo.
+   With no EEG hardware connected it runs on bundled sample data so the focus gauge and fire
+   logic still demo.
 2. **Just DART** — the original security turret: tracks everyone, fires only at
    **UNAUTHORIZED** locked targets (face-authorization gate). FlowState is not involved.
 
@@ -81,7 +81,6 @@ stream share a single USB serial link (multiplexed — see [docs/SERIAL_PROTOCOL
 | Tilt servo          | `9`    |
 | Trigger servo       | `8`    |
 | Status LED          | `13`   |
-| FlowState zone-out  | `12`   |
 | BioAmp EEG (A0)     | `A0`   |
 
 The vendored FlowState DSP lives in `scripts/flowstate/` (copied from the upstream repo).

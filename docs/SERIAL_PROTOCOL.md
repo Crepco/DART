@@ -15,7 +15,7 @@ Wire format between the Python host (`scripts/yolo.py`) and the Arduino controll
 ## Command format
 
 ```
-P###T###F#[Z#]\n
+P###T###F#\n
 ```
 
 | Field | Meaning      | Range / values                                   |
@@ -23,7 +23,6 @@ P###T###F#[Z#]\n
 | `P###`| Pan speed    | `065`–`115`, `090` = stop (centre ± `MAX_SPEED`) |
 | `T###`| Tilt speed   | `065`–`115`, `090` = stop                        |
 | `F#`  | Fire flag    | `0` = trigger rest, `1` = trigger fire           |
-| `Z#`  | Zone-out flag (optional) | `0`/`1` → drives status **pin 12** (FlowState "not focusing" indicator). Independent of `F`. |
 
 The pan/tilt servos are **continuous-rotation**: the value is a *speed*, where `090` is
 neutral/stop and values above/below drive in either direction. The host clamps both to
@@ -40,8 +39,7 @@ Examples:
 ### Backward compatibility
 
 If the `F#` token is absent (`P###T###\n`), the Arduino updates pan/tilt and leaves the
-trigger untouched. If `Z#` is absent, pin 12 is left unchanged. New host code (the web UI)
-always sends `F`; it sends `Z` only in FlowState mode.
+trigger untouched. New host code (the web UI) always sends `F`.
 
 ## FlowState EEG (shared link)
 
@@ -70,7 +68,6 @@ the *same* serial port, multiplexed with the servo commands.
 | Black (GND)       | `GND`  |
 
 Electrodes: two active on the forehead (above the eyebrows), one reference on an earlobe.
-Status **pin 12** can drive an LED/buzzer that lights when the wearer zones out.
 
 ## Trigger (MG90)
 
