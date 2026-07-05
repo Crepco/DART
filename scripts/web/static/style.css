@@ -7,9 +7,9 @@
   --line:    #1f2926;
   --ink:     #d7e2dd;
   --muted:   #6f827b;
-  --green:   #25d07a;   /* tracking / focused / safe-auth */
+  --green:   #25d07a;   /* tracking / safe-auth */
   --amber:   #ffb020;   /* armed */
-  --red:     #ff3b46;   /* firing / zoned out */
+  --red:     #ff3b46;   /* firing */
   --cyan:    #2bd6d6;   /* reticle */
   --mono: "SFMono-Regular", ui-monospace, "Cascadia Mono", Consolas, monospace;
   --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
@@ -55,6 +55,7 @@ code { font-family: var(--mono); color: var(--cyan); background: #0d1512;
 
 .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 @media (max-width: 720px) { .cards { grid-template-columns: 1fr; } }
+.cards-single { grid-template-columns: 1fr; max-width: 460px; margin: 0 auto; }
 
 .card {
   position: relative; text-align: left; background: var(--panel);
@@ -63,11 +64,9 @@ code { font-family: var(--mono); color: var(--cyan); background: #0d1512;
   transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
 }
 .card:hover { transform: translateY(-3px); }
-.card.flowstate:hover { border-color: var(--red); box-shadow: 0 14px 40px -22px var(--red); }
 .card.dart:hover      { border-color: var(--green); box-shadow: 0 14px 40px -22px var(--green); }
 .card-num { font-family: var(--mono); font-size: 13px; color: var(--muted); letter-spacing: .2em; }
 .card h2 { margin: 0; font-size: 26px; letter-spacing: .01em; }
-.card.flowstate h2 { color: #ffd9b0; }
 .card.dart h2 { color: #bfeed6; }
 .card p { margin: 0; color: #aebbb4; line-height: 1.5; font-size: 15px; }
 .card .meta { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; }
@@ -79,7 +78,6 @@ code { font-family: var(--mono); color: var(--cyan); background: #0d1512;
   font-family: var(--mono); font-size: 14px; letter-spacing: .04em; font-weight: 600;
   color: #06120c; transition: filter .15s ease;
 }
-.card.flowstate button { background: linear-gradient(180deg, #ff6b6b, var(--red)); color: #1a0405; }
 .card.dart button { background: linear-gradient(180deg, #4ee39a, var(--green)); }
 .card button:hover { filter: brightness(1.08); }
 
@@ -97,7 +95,6 @@ code { font-family: var(--mono); color: var(--cyan); background: #0d1512;
   display: inline-block; }
 .mode-pill { margin-left: 6px; font-family: var(--mono); font-size: 12px; letter-spacing: .1em;
   padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
-.mode-pill.flowstate { color: #ffd9b0; border-color: #6a3320; background: #1c100b; }
 .mode-pill.dart { color: #bfeed6; border-color: #1d4a35; background: #0c1611; }
 .topbar form { margin-left: auto; }
 .stop { font-family: var(--mono); font-size: 13px; letter-spacing: .08em; cursor: pointer;
@@ -141,19 +138,3 @@ code { font-family: var(--mono); color: var(--cyan); background: #0d1512;
   box-shadow: 0 0 24px -4px var(--red); animation: pulse .5s infinite alternate; }
 .fire-state[data-fire="focused"] { color: var(--green); border-color: #1d4a35; background: #0c1611; }
 @keyframes pulse { from { filter: brightness(.92); } to { filter: brightness(1.18); } }
-
-.focus-block { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
-.focus-gauge { margin-top: 10px; }
-.focus-num { font-family: var(--mono); font-size: 40px; text-align: center; line-height: 1; }
-.focus-num small { font-size: 16px; color: var(--muted); }
-.focus-bar { position: relative; height: 12px; border-radius: 7px; background: #0c1310;
-  border: 1px solid var(--line); margin: 12px 0 8px; overflow: hidden; }
-.focus-fill { height: 100%; width: 50%; border-radius: 7px;
-  background: linear-gradient(90deg, var(--red), var(--amber) 45%, var(--green));
-  transition: width .2s ease; }
-.focus-thresh { position: absolute; top: -3px; bottom: -3px; left: 40%; width: 2px;
-  background: var(--muted); opacity: .7; }
-.focus-state { text-align: center; font-family: var(--mono); font-size: 13px; letter-spacing: .1em;
-  text-transform: uppercase; color: var(--muted); }
-.focus-state.zoned { color: var(--red); }
-.focus-state.focused { color: var(--green); }

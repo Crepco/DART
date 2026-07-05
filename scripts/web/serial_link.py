@@ -1,24 +1,17 @@
-"""Unified serial link to the single Arduino Uno R3.
+"""Serial link to the single Arduino Uno R3.
 
-DART and FlowState now share ONE board on ONE serial port, so they must share one
-serial connection too. This class owns the `serial.Serial`, runs a reader thread,
-and multiplexes the two data streams that cross the wire:
+Owns the `serial.Serial` and writes servo commands to the board. The link is write-only
+after the boot handshake — the Arduino only ever emits a one-shot "READY" (consumed during
+connect); nothing streams back during operation. Writes are serialized behind a lock.
 
   host -> R3 :  "P###T###F#\\n"    servo pan/tilt + fire flag
-                "S#\\n"             EEG stream enable(1)/disable(0)
   R3   -> host: "READY\\n"          one-shot boot handshake
-                "E####\\n"          one raw EEG ADC sample (0..1023), only while streaming
-
-The reader routes "READY" to the handshake and "E###" into an EEG buffer the focus
-bridge drains; everything else is logged. Writes are serialized behind a lock so the
-runner thread (servo commands) and the focus loop (stream toggle) can't interleave.
 """
 
 from __future__ import annotations
 
 import threading
 import time
-from collections import deque
 
 import serial
 
@@ -37,7 +30,7 @@ def build_command(pan: int, tilt: int, fire: bool) -> bytes:
 
 
 class SerialLink:
-    """Owns the one shared serial port; safe for one writer + the reader thread."""
+    """Owns the serial port; safe for a single writer."""
 
     def __init__(self, port: str = PORT, baud: int = BAUD_RATE):
         self.port = port
@@ -46,18 +39,13 @@ class SerialLink:
         self.connected = False
 
         self._write_lock = threading.Lock()
-        self._eeg_lock = threading.Lock()
-        self._eeg = deque(maxlen=20000)   # ~80 s at 250 Hz; drained continuously
-        self._stopped = False
-        self._reader: threading.Thread | None = None
-        self.streaming = False
 
     # ------------------------------------------------------------- connection
     def connect(self, handshake_timeout: float = 5.0) -> bool:
         """Open the port and wait for the board's one-shot READY.
 
         Returns True if the Arduino answered; False (preview mode) if the port can't
-        be opened or no board responds — callers then run without servos/EEG.
+        be opened or no board responds — callers then run without servos.
         """
         try:
             # write_timeout guards against a phantom COM port that opens but nothing
@@ -95,41 +83,8 @@ class SerialLink:
 
         self.connected = True
         self.send_stop()
-        self._reader = threading.Thread(target=self._read_loop, daemon=True)
-        self._reader.start()
         print(f"[INFO] Serial ready on {self.port} @ {self.baud}")
         return True
-
-    # ------------------------------------------------------------------ reader
-    def _read_loop(self):
-        assert self.ser is not None
-        while not self._stopped:
-            try:
-                line = self.ser.readline().decode("ascii", errors="ignore").strip()
-            except (serial.SerialException, OSError):
-                break
-            if not line:
-                continue
-            if line[0] == "E":
-                try:
-                    val = int(line[1:])
-                except ValueError:
-                    continue
-                with self._eeg_lock:
-                    self._eeg.append(val)
-            elif line == "READY":
-                continue  # spurious reset; ignore
-            else:
-                print(f"[ARDUINO] {line}")
-
-    def drain_eeg(self) -> list[int]:
-        """Return and clear all EEG samples received since the last call."""
-        with self._eeg_lock:
-            if not self._eeg:
-                return []
-            out = list(self._eeg)
-            self._eeg.clear()
-            return out
 
     # ------------------------------------------------------------------ writer
     def _write(self, payload: bytes, flush: bool = False) -> None:
@@ -147,22 +102,12 @@ class SerialLink:
                      flush: bool = False) -> None:
         self._write(build_command(pan, tilt, fire), flush=flush)
 
-    def set_stream(self, enable: bool) -> None:
-        """Enable/disable the R3's EEG sample stream (off by default => mode 2 quiet)."""
-        self.streaming = enable
-        self._write(f"S{1 if enable else 0}\n".encode("ascii"), flush=True)
-
     def send_stop(self) -> None:
         self._write(build_command(STOP_PAN, STOP_TILT, False), flush=True)
 
     # ------------------------------------------------------------------- close
     def close(self) -> None:
-        self._stopped = True
-        if self.streaming:
-            self.set_stream(False)
         self.send_stop()
-        if self._reader:
-            self._reader.join(timeout=1.0)
         if self.ser:
             try:
                 self.ser.close()

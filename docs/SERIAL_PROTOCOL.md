@@ -41,34 +41,6 @@ Examples:
 If the `F#` token is absent (`P###T###\n`), the Arduino updates pan/tilt and leaves the
 trigger untouched. New host code (the web UI) always sends `F`.
 
-## FlowState EEG (shared link)
-
-Because one Uno R3 now runs **both** DART and FlowState, the BioAmp EXG Pill streams over
-the *same* serial port, multiplexed with the servo commands.
-
-| Direction | Line     | Meaning                                                       |
-|-----------|----------|--------------------------------------------------------------|
-| Host → R3 | `S1` / `S0` | Start / stop the EEG sample stream (off after reset).      |
-| R3 → Host | `E####`  | One raw 10-bit ADC sample from `A0` (`0`–`1023`).            |
-
-- Sample rate: `SAMPLE_RATE` = **250 Hz** on the R3 (must match `SERIAL_FS` in
-  `scripts/web/focus.py`). At ~6 bytes/sample that is ~1.5 kB/s — well within 115200 baud
-  alongside the 30 Hz command traffic.
-- The host's `SerialLink` reader thread routes `E###` lines into the focus pipeline and
-  `READY` to the handshake; servo commands flow the other way on the same port.
-- Mode 2 ("Just DART") never sends `S1`, so the link stays command-only and identical to
-  the original behaviour.
-
-## Wiring (BioAmp EXG Pill → Uno R3)
-
-| BioAmp pin        | R3 pin |
-|-------------------|--------|
-| Yellow (signal)   | `A0`   |
-| Red (VCC)         | `5V` (or `3.3V`) |
-| Black (GND)       | `GND`  |
-
-Electrodes: two active on the forehead (above the eyebrows), one reference on an earlobe.
-
 ## Trigger (MG90)
 
 | Constant             | Angle |

@@ -1,5 +1,5 @@
 @echo off
-REM Launch the DART web UI (mode selector: FlowState+DART or Just DART).
+REM Launch the DART web UI (security turret).
 REM Uses the project venv if present, else the system Python.
 cd /d "%~dp0"
 if exist ".venv\Scripts\python.exe" (

@@ -43,8 +43,6 @@ onnxruntime-gpu==1.26.0
 # Transitive / protobuf-using paths (onnx export, etc.)
 protobuf==3.20.3
 
-# Web UI (scripts/web) + FlowState integration
-# Flask serves the mode-selector front-end and the MJPEG video feed; SciPy powers the
-# vendored FlowState DSP (scripts/flowstate: Welch PSD + notch/bandpass filtering).
+# Web UI (scripts/web)
+# Flask serves the launcher front-end and the MJPEG video feed.
 flask==3.1.3
-scipy==1.17.1

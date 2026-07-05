@@ -1,5 +1,5 @@
 // Landing page: scan for connected cameras + Arduino serial ports and feed the
-// choices into whichever launch form (FlowState+DART or Just DART) gets submitted.
+// choices into the DART launch form on submit.
 
 const sel = document.getElementById("cameraSelect");
 const fields = () => document.querySelectorAll(".cameraField");

@@ -1,7 +1,7 @@
 """Launch the DART web UI from anywhere.
 
-Puts scripts/ on sys.path so the `web` package and its siblings (config, core, main,
-flowstate) all import cleanly, then starts the Flask app. Run:
+Puts scripts/ on sys.path so the `web` package and its siblings (config, core, main)
+all import cleanly, then starts the Flask app. Run:
 
     python scripts/run_web.py            # default http://127.0.0.1:5000
     python scripts/run_web.py 50001      # custom port

@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DART — {{ 'FlowState + DART' if mode == 'flowstate' else 'Just DART' }}</title>
+  <title>DART</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body class="run" data-mode="{{ mode }}">
+<body class="run">
   <header class="topbar">
     <div class="brand-sm"><span class="reticle-sm"></span> DART</div>
-    <div class="mode-pill {{ mode }}">{{ 'FLOWSTATE + DART' if mode == 'flowstate' else 'JUST DART' }}</div>
+    <div class="mode-pill dart">SECURITY TURRET</div>
     <form method="post" action="{{ url_for('stop') }}" id="stopForm">
       <button class="stop" type="submit">■ STOP</button>
     </form>
@@ -37,19 +37,6 @@
       <div class="fire-state" id="fireState" data-fire="0">
         <span id="fireLabel">SAFE</span>
       </div>
-
-      {% if mode == 'flowstate' %}
-      <div class="focus-block">
-        <div class="row"><span class="k">Focus source</span><span class="v" id="focusSource">—</span></div>
-        <div class="row"><span class="k">Score mode</span><span class="v" id="scoreMode">—</span></div>
-        <div class="focus-gauge">
-          <div class="focus-num"><span id="focusVal">--</span><small>/100</small></div>
-          <div class="focus-bar"><div class="focus-fill" id="focusFill"></div>
-            <div class="focus-thresh"></div></div>
-          <div class="focus-state" id="focusState">warming up…</div>
-        </div>
-      </div>
-      {% endif %}
     </aside>
   </main>
 

@@ -1,8 +1,5 @@
-// Polls /state ~5x/sec and paints the status panel + (mode 1) focus gauge.
+// Polls /state ~5x/sec and paints the status panel.
 // The video itself is a plain MJPEG <img>, so JS only handles telemetry/labels.
-
-const mode = document.body.dataset.mode;
-const FOCUS_THRESHOLD = 40;   // matches FocusPipeline alert_threshold
 
 const $ = (id) => document.getElementById(id);
 const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
@@ -40,28 +37,8 @@ function paint(s) {
     let st = "0";
     if (s.fire) st = "1";
     else if (s.fire_label === "ARMED") st = "armed";
-    else if (s.fire_label === "FOCUSED" || s.fire_label === "SAFE/AUTH") st = "focused";
+    else if (s.fire_label === "SAFE/AUTH") st = "focused";
     chip.dataset.fire = st;
-  }
-
-  // Focus gauge (mode 1)
-  if (mode === "flowstate") {
-    set("focusSource", s.focus_source === "serial" ? "EEG · A0 (live)"
-                     : s.focus_source === "csv"    ? "sample data (demo)" : "—");
-    set("scoreMode", s.score_mode || "—");
-    const f = (s.focus != null) ? s.focus : null;
-    set("focusVal", f != null ? f.toFixed(0) : "--");
-    const fill = $("focusFill");
-    if (fill && f != null) fill.style.width = Math.max(0, Math.min(100, f)) + "%";
-    const fs = $("focusState");
-    if (fs) {
-      const zoned = !!s.zone_out;
-      fs.textContent = !s.focus_ready ? "warming up…"
-                     : zoned ? "ZONED OUT — FIRING ENABLED"
-                     : (s.focus_state || "focused");
-      fs.classList.toggle("zoned", zoned);
-      fs.classList.toggle("focused", !zoned && s.focus_ready);
-    }
   }
 }
 

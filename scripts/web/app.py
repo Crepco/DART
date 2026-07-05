@@ -1,9 +1,7 @@
 """DART web front-end (Flask).
 
-Landing page lets you pick the build:
-  1) FlowState + DART  -> mode "flowstate": tracks the nearest person and fires when the
-     EEG focus bridge reports a zone-out.
-  2) Just DART         -> mode "dart": the original security turret (fire UNAUTHORIZED).
+Landing page lets you pick a camera + Arduino serial port, then launches the DART security
+turret: it tracks everyone but only fires at UNAUTHORIZED locked targets (auth gate).
 
 The heavy DART runner (camera + YOLO + torch) is imported lazily on /start so the landing
 page loads instantly. One runner exists at a time, guarded by a lock.
@@ -81,8 +79,6 @@ def index():
 @app.route("/start", methods=["POST"])
 def start():
     global _runner
-    mode = request.form.get("mode", "dart")
-    mode = "flowstate" if mode == "flowstate" else "dart"
     camera = request.form.get("camera", type=int)   # None -> runner uses config CAM_INDEX
     port = request.form.get("port") or None          # None/"" -> runner uses config PORT
     from .runner import DartRunner   # lazy: pulls in torch/YOLO only when actually starting
@@ -90,7 +86,7 @@ def start():
     with _runner_lock:
         if _runner is not None:
             _runner.stop()
-        _runner = DartRunner(mode=mode, camera=camera, port=port)
+        _runner = DartRunner(camera=camera, port=port)
         _runner.start()
     return redirect(url_for("run_view"))
 
@@ -132,8 +128,7 @@ def run_view():
     with _runner_lock:
         if _runner is None:
             return redirect(url_for("index"))
-        mode = _runner.mode
-    return render_template("run.html", mode=mode)
+    return render_template("run.html")
 
 
 @app.route("/stop", methods=["POST"])

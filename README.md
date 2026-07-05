@@ -55,25 +55,19 @@ Autonomous target tracking system: detect, track, and aim at moving objects usin
 
 ---
 
-## Web UI (mode selector) + FlowState
+## Web UI
 
-A browser front-end (`scripts/web`, Flask) lets you pick the build at launch:
+A browser front-end (`scripts/web`, Flask) launches the turret with a camera + Arduino
+serial-port picker:
 
 ```
 python scripts/run_web.py        # then open http://127.0.0.1:5000
 # or just double-click run_dart_web.bat on Windows
 ```
 
-1. **FlowState + DART** — the turret tracks the **nearest person (any auth)** and fires
-   only while the [FlowState](https://github.com/Crepco/flowstate) EEG focus bridge reports
-   a **zone-out** (sustained focus below threshold). *Stay focused → safe; zone out → darted.*
-   With no EEG hardware connected it runs on bundled sample data so the focus gauge and fire
-   logic still demo.
-2. **Just DART** — the original security turret: tracks everyone, fires only at
-   **UNAUTHORIZED** locked targets (face-authorization gate). FlowState is not involved.
-
-**One Arduino Uno R3 runs both projects.** DART servo commands and the BioAmp EXG Pill EEG
-stream share a single USB serial link (multiplexed — see [docs/SERIAL_PROTOCOL.md](docs/SERIAL_PROTOCOL.md)):
+**DART** — the security turret: it tracks everyone but fires only at **UNAUTHORIZED** locked
+targets (face-authorization gate). Servo commands go to the Arduino Uno R3 over USB serial
+(see [docs/SERIAL_PROTOCOL.md](docs/SERIAL_PROTOCOL.md)):
 
 | Function            | Pin    |
 |---------------------|--------|
@@ -81,9 +75,7 @@ stream share a single USB serial link (multiplexed — see [docs/SERIAL_PROTOCOL
 | Tilt servo          | `9`    |
 | Trigger servo       | `8`    |
 | Status LED          | `13`   |
-| BioAmp EEG (A0)     | `A0`   |
 
-The vendored FlowState DSP lives in `scripts/flowstate/` (copied from the upstream repo).
 The web UI supersedes the desktop OpenCV window (`scripts/main.py`), which still works standalone.
 
 ---

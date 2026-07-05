@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DART — select build</title>
+  <title>DART — launch</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body class="landing">
@@ -11,7 +11,7 @@
     <header class="brand">
       <div class="reticle" aria-hidden="true"></div>
       <h1>DART</h1>
-      <p class="tag">Auto-aim vision turret · choose your build</p>
+      <p class="tag">Auto-aim security turret</p>
     </header>
 
     <div class="camera-pick">
@@ -26,42 +26,23 @@
       <button type="button" id="refreshPorts" title="Re-scan serial ports">⟳ scan</button>
     </div>
 
-    <section class="cards">
-      <form class="card flowstate" method="post" action="{{ url_for('start') }}">
-        <input type="hidden" name="mode" value="flowstate">
-        <input type="hidden" name="camera" class="cameraField">
-        <input type="hidden" name="port" class="portField">
-        <div class="card-num">01</div>
-        <h2>FlowState&nbsp;+&nbsp;DART</h2>
-        <p>EEG focus tracking arms the turret. Stay focused and you're safe —
-           <strong>zone out and DART fires</strong>. BioAmp on <code>A0</code>.</p>
-        <ul class="meta">
-          <li>Targets: nearest person (any auth)</li>
-          <li>Fires: while focus &lt; threshold</li>
-          <li>No EEG? Runs on bundled sample data</li>
-        </ul>
-        <button type="submit">Launch FlowState + DART →</button>
-      </form>
-
+    <section class="cards cards-single">
       <form class="card dart" method="post" action="{{ url_for('start') }}">
-        <input type="hidden" name="mode" value="dart">
         <input type="hidden" name="camera" class="cameraField">
         <input type="hidden" name="port" class="portField">
-        <div class="card-num">02</div>
-        <h2>Just DART</h2>
-        <p>The original security turret. Face authorization gates the trigger —
+        <h2>DART</h2>
+        <p>The security turret. Face authorization gates the trigger —
            it tracks everyone but <strong>only fires at UNAUTHORIZED targets</strong>.</p>
         <ul class="meta">
           <li>Targets: UNAUTHORIZED persons</li>
           <li>Fires: on a dwelled lock-on</li>
-          <li>FlowState not involved</li>
         </ul>
-        <button type="submit">Launch Just DART →</button>
+        <button type="submit">Launch DART →</button>
       </form>
     </section>
 
     <footer class="foot">
-      <span class="dot"></span> One Arduino Uno R3 · servos pan&nbsp;10 / tilt&nbsp;9 / trigger&nbsp;8 · EEG A0
+      <span class="dot"></span> Arduino Uno R3 · servos pan&nbsp;10 / tilt&nbsp;9 / trigger&nbsp;8
     </footer>
   </main>
   <script src="{{ url_for('static', filename='landing.js') }}"></script>

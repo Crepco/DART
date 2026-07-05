@@ -1,16 +1,10 @@
-// DART turret servo controller — unified DART + FlowState firmware (Arduino Uno R3).
+// DART turret servo controller (Arduino Uno R3).
 // Protocol + safety notes: see docs/SERIAL_PROTOCOL.md
 //
-// One R3 now runs both projects, so this sketch does two jobs:
-//   1. Drive pan/tilt/trigger servos from host commands.
-//   2. Stream the BioAmp EXG Pill (FlowState EEG, on A0) back to the host on request.
+// Drives pan/tilt/trigger servos from host commands.
 //
-// Host -> R3 (one line each):
-//   P###T###F#       pan, tilt, fire flag
-//   S#               EEG stream: S1 = start, S0 = stop (off by default)
-// R3 -> host:
-//   READY            one-shot boot handshake
-//   E####            one raw 10-bit EEG sample (0..1023), only while streaming
+// Host -> R3:  P###T###F#       pan, tilt, fire flag
+// R3 -> host:  READY            one-shot boot handshake
 #include <Servo.h>
 
 #define STOP_PAN 90
@@ -25,10 +19,6 @@
 #define PAN_PIN 10
 #define TRIGGER_PIN 8
 #define LED_PIN 13
-#define EEG_PIN A0             // BioAmp EXG Pill signal out
-
-#define SAMPLE_RATE 250        // Hz — must match SERIAL_FS in scripts/web/focus.py
-const unsigned long SAMPLE_US = 1000000UL / SAMPLE_RATE;
 
 Servo panServo;
 Servo tiltServo;
@@ -38,8 +28,6 @@ char buf[32];
 uint8_t bufIdx = 0;
 unsigned long lastCmdTime = 0;
 bool fireState = false;
-bool streaming = false;
-unsigned long nextSample = 0;
 
 void stopAll()
 {
@@ -70,7 +58,6 @@ void setup()
 
     Serial.println("READY");
     lastCmdTime = millis();
-    nextSample = micros();
 }
 
 void loop()
@@ -95,35 +82,12 @@ void loop()
         }
     }
 
-    // EEG streaming (FlowState). Paced by micros(); independent of command timeout.
-    if (streaming)
-    {
-        unsigned long now = micros();
-        if ((long)(now - nextSample) >= 0)
-        {
-            nextSample += SAMPLE_US;
-            int value = analogRead(EEG_PIN);
-            Serial.print('E');
-            Serial.println(value);
-        }
-    }
-
     if (millis() - lastCmdTime > TIMEOUT_MS)
         stopAll();
 }
 
 void parseCommand(const char *cmd)
 {
-    // EEG stream toggle: "S1" / "S0".
-    if (cmd[0] == 'S')
-    {
-        streaming = (cmd[1] == '1');
-        if (streaming)
-            nextSample = micros();
-        lastCmdTime = millis();
-        return;
-    }
-
     if (cmd[0] != 'P')
         return;
 

@@ -6,20 +6,12 @@ no cv2 window. Instead it runs in a background thread and publishes:
   * the latest annotated frame as JPEG bytes  (-> MJPEG video feed)
   * a state dict                              (-> /state JSON the page polls)
 
-Two modes (chosen on the landing page):
-
-  * "dart"      — mode 2: unchanged behaviour. Locks UNAUTHORIZED persons; fires on a
-                  dwelled lock (auth gate). FlowState is not involved.
-  * "flowstate" — mode 1: locks the nearest person (any auth) and fires only while the
-                  FlowState focus bridge reports a zone-out.
-
-The non-trivial lock/dwell/PID/serial-cadence logic is shared with main.py; only the
-fire *gate* and the target policy differ per mode.
+Behaviour matches the desktop turret: it locks UNAUTHORIZED persons and fires on a
+dwelled lock (auth gate). The lock/dwell/PID/serial-cadence logic is shared with main.py.
 """
 
 from __future__ import annotations
 
-import math
 import os
 import threading
 import time
@@ -32,24 +24,6 @@ from core.detector import select_face
 from main import update_fire_state, apply_output_deadband, AUTH_COLS
 
 from .serial_link import SerialLink
-from .focus import FocusBridge
-
-
-def update_fire_state_focus(error_x, error_y, zone_out, fire, lock_count):
-    """Mode-1 fire gate: identical dwell/hysteresis to the auth gate, but the arming
-    condition is 'not focusing' (zone_out) instead of an UNAUTHORIZED target.
-
-    Returns (fire, lock_count, locked)."""
-    lock_err  = math.hypot(error_x, error_y)
-    on_target = lock_err <= LOCK_ON_RADIUS
-    if not zone_out:
-        return False, 0, on_target            # focused -> safe, don't accrue dwell
-    if fire:
-        if lock_err > LOCK_RELEASE_RADIUS:
-            return False, 0, on_target
-        return True, lock_count, on_target
-    lock_count = lock_count + 1 if on_target else 0
-    return lock_count >= FIRE_DWELL_FRAMES, lock_count, on_target
 
 
 def _fire_label_dart(fire, locked, locked_face_auth):
@@ -62,22 +36,12 @@ def _fire_label_dart(fire, locked, locked_face_auth):
     return "SAFE", (120, 120, 120)
 
 
-def _fire_label_focus(fire, locked, zone_out):
-    if fire:
-        return "FIRING", COL_FIRING
-    if locked and zone_out:
-        return "ARMED", COL_ARMED
-    if locked and not zone_out:
-        return "FOCUSED", COL_AUTHORIZED
-    return "SAFE", (120, 120, 120)
-
-
 def _draw_hud(frame, status, pan_cmd, tilt_cmd, smooth_cx, smooth_cy,
               all_persons, faces, track_id, w_f, h_f, error_x, error_y,
-              fire_label, fire_col, auth_statuses, focus_info):
-    """Annotate the frame: person/face boxes, centroid, top status bar, reticle, lock
-    ring, and (mode 1) a focus gauge. Adapted from main.draw_hud, kept self-contained so
-    the proven desktop path (main.py) is untouched."""
+              fire_label, fire_col, auth_statuses):
+    """Annotate the frame: person/face boxes, centroid, top status bar, reticle, and lock
+    ring. Adapted from main.draw_hud, kept self-contained so the proven desktop path
+    (main.py) is untouched."""
     tracking   = (status == "TRACKING")
     bar_col    = COL_TRACKING if tracking else COL_NO_BODY
     cx_f, cy_f = w_f // 2, h_f // 2
@@ -118,37 +82,22 @@ def _draw_hud(frame, status, pan_cmd, tilt_cmd, smooth_cx, smooth_cy,
     cv2.circle(frame, (cx_f, cy_f), arm + 8, COL_RETICLE, 1, cv2.LINE_AA)
     cv2.circle(frame, (cx_f, cy_f), LOCK_ON_RADIUS, fire_col, 1, cv2.LINE_AA)
 
-    if focus_info is not None:
-        focus = focus_info["focus"]
-        zoned = focus_info["zone_out"]
-        gcol  = COL_UNAUTHORIZED if zoned else COL_AUTHORIZED
-        bx, by, bw, bh = 10, h_f - 30, 160, 12
-        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (60, 60, 60), 1, cv2.LINE_AA)
-        fillw = int(bw * max(0.0, min(100.0, focus)) / 100.0)
-        cv2.rectangle(frame, (bx, by), (bx + fillw, by + bh), gcol, -1, cv2.LINE_AA)
-        label = f"FOCUS {focus:5.1f}  {'ZONED OUT' if zoned else focus_info['state'].upper()}"
-        cv2.putText(frame, label, (bx, by - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, gcol, 1, cv2.LINE_AA)
-
 
 class DartRunner:
-    """Owns the camera, detector, serial link, (mode-1) focus bridge, and loop thread."""
+    """Owns the camera, detector, serial link, and loop thread."""
 
-    def __init__(self, mode: str = "dart", camera: int | None = None,
-                 port: str | None = None):
-        self.mode   = "flowstate" if mode == "flowstate" else "dart"
+    def __init__(self, camera: int | None = None, port: str | None = None):
         self.camera = CAM_INDEX if camera is None else camera
         self.port   = PORT if port is None else port
 
         self._lock       = threading.Lock()
         self._cam_lock   = threading.Lock()   # guards hot-swapping self.cam
         self._frame_jpeg: bytes | None = None
-        self._state: dict = {"running": False, "mode": self.mode, "status": "STARTING"}
+        self._state: dict = {"running": False, "status": "STARTING"}
         self._stopped    = False
         self._thread: threading.Thread | None = None
 
         self.link: SerialLink | None = None
-        self.focus: FocusBridge | None = None
         self.cam = None
         self.detector = None
         self.error: str | None = None
@@ -173,7 +122,7 @@ class DartRunner:
             return dict(self._state)
 
     def set_camera(self, index: int):
-        """Hot-swap the capture device without reloading models/serial/focus.
+        """Hot-swap the capture device without reloading models/serial.
 
         Opens the new camera first (slow part, off the lock); only swaps it in if it
         actually delivers a frame, so a bad index leaves the current feed untouched.
@@ -225,8 +174,7 @@ class DartRunner:
         cam      = self._setup_camera()
         self.cam = cam
         face_path = FACE_MODEL if os.path.exists(FACE_MODEL) else None
-        policy   = "any" if self.mode == "flowstate" else "unauthorized"
-        detector = YOLODetector(PERSON_MODEL, face_path, target_policy=policy)
+        detector = YOLODetector(PERSON_MODEL, face_path)
         self.detector = detector
 
         pid_pan  = PID(PAN_KP,  PAN_KI,  PAN_KD,  MAX_SPEED)
@@ -236,12 +184,6 @@ class DartRunner:
         connected = self.link.connect()
         if not connected:
             self.link = None
-
-        if self.mode == "flowstate":
-            source = "serial" if (self.link and self.link.connected) else "csv"
-            self.focus = FocusBridge(link=self.link, source=source)
-            self.focus.start()
-            print(f"[INFO] FlowState focus source: {source}")
 
         # ── loop state (mirrors main.py) ──
         smooth_cx = smooth_cy = None
@@ -285,11 +227,7 @@ class DartRunner:
             auth_statuses = det["auth_statuses"]
             locked_face_auth = det.get("locked_face_auth", "UNKNOWN")
 
-            zone_out = self.focus.zone_out if self.focus else False
-
             def fire_gate(ex, ey, fire_in, lc_in):
-                if self.mode == "flowstate":
-                    return update_fire_state_focus(ex, ey, zone_out, fire_in, lc_in)
                 return update_fire_state(ex, ey, locked_face_auth, fire_in, lc_in)
 
             pan_raw = tilt_raw = 0.0
@@ -350,25 +288,11 @@ class DartRunner:
             pan_cmd  = STOP_PAN  + int(round(slew_pan))
             tilt_cmd = STOP_TILT + int(round(slew_tilt))
 
-            if self.mode == "flowstate":
-                # FlowState: the student is stationary, so don't track — hold the turret
-                # still (STOP = no motion on the continuous-rotation servos). The fire flag
-                # still rides the same P###T###F# packet, so the trigger works; only aiming
-                # is disabled. (dart mode keeps full pan/tilt tracking.)
-                pan_cmd, tilt_cmd = STOP_PAN, STOP_TILT
-                fire_label, fire_col = _fire_label_focus(fire, locked, zone_out)
-            else:
-                fire_label, fire_col = _fire_label_dart(fire, locked, locked_face_auth)
-
-            focus_info = None
-            if self.focus is not None:
-                fl = self.focus.latest
-                focus_info = {"focus": self.focus.focus, "zone_out": zone_out,
-                              "state": fl.get("state", "warmup")}
+            fire_label, fire_col = _fire_label_dart(fire, locked, locked_face_auth)
 
             _draw_hud(frame, status, pan_cmd, tilt_cmd, smooth_cx, smooth_cy,
                       all_persons, faces, track_id, w_f, h_f, error_x, error_y,
-                      fire_label, fire_col, auth_statuses, focus_info)
+                      fire_label, fire_col, auth_statuses)
 
             # ── serial send (same cadence as main.py) ──
             if self.link:
@@ -385,7 +309,7 @@ class DartRunner:
 
             ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             state = {
-                "running": True, "mode": self.mode, "status": status,
+                "running": True, "status": status,
                 "track_id": track_id, "n_persons": len(all_persons),
                 "pan": pan_cmd, "tilt": tilt_cmd, "fire": bool(fire),
                 "locked": bool(locked), "fire_label": fire_label,
@@ -393,13 +317,6 @@ class DartRunner:
                 "camera": self.camera,
                 "fps": round(fps, 1),
             }
-            if self.mode == "flowstate" and self.focus is not None:
-                fl = self.focus.latest
-                state.update(focus=round(self.focus.focus, 1), zone_out=bool(zone_out),
-                             focus_state=fl.get("state", "warmup"),
-                             score_mode=fl.get("score_mode", "relative"),
-                             focus_source=self.focus.source,
-                             focus_ready=bool(fl.get("ready", False)))
             with self._lock:
                 if ok:
                     self._frame_jpeg = buf.tobytes()
@@ -409,7 +326,6 @@ class DartRunner:
 
     def _teardown(self):
         for closer in (
-            lambda: self.focus and self.focus.stop(),
             lambda: self.link and self.link.close(),
             lambda: self.detector and self.detector.stop(),
             lambda: self.cam and self.cam.stop(),
