@@ -24,6 +24,12 @@ CAM_RECONNECT_DELAY     = 0.5   # backoff base (s)
 CAM_RECONNECT_MAX_DELAY = 5.0   # backoff cap (s)
 CAM_READ_FAIL_SLEEP     = 0.005 # throttle a single failed read (~5ms)
 
+# Startup open retries: Windows/DSHOW doesn't release a device instantly after
+# another process (a probe, a stopping runner) closes it, and the delay isn't
+# predictable — so the first open gets several attempts, each logged.
+CAM_OPEN_RETRIES     = 5
+CAM_OPEN_RETRY_DELAY = 0.6      # seconds between attempts
+
 # ── Models ──
 SCRIPT_DIR   = pathlib.Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent

@@ -64,3 +64,14 @@ async function loadPorts() {
 portSel.addEventListener("change", syncPort);
 document.getElementById("refreshPorts").addEventListener("click", loadPorts);
 loadPorts();
+
+// ── launch guard ──────────────────────────────────────────────────────────
+// The first launch imports torch + loads models server-side; a second click in
+// that window used to spawn a second runner that killed the first. /start is
+// idempotent now, but don't invite the double-submit in the first place.
+document.querySelectorAll("form.card").forEach((form) => {
+  form.addEventListener("submit", () => {
+    const btn = form.querySelector('button[type="submit"]');
+    if (btn) { btn.disabled = true; btn.textContent = "Launching…"; }
+  });
+});

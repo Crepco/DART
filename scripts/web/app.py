@@ -25,36 +25,29 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 _runner = None
 _runner_lock = threading.Lock()
+_probe_lock = threading.Lock()   # serialize device scans — concurrent probes fight
+                                 # over the same DSHOW devices
 
-MAX_CAMERA_PROBE = 6   # check indices 0..5 when scanning for connected cameras
+# Statuses during which the runner hasn't finished claiming its camera yet.
+_STARTING_STATUSES = ("STARTING", "LOADING MODELS")
+# Statuses meaning the runner is done and safe to replace.
+_DEAD_STATUSES = ("ERROR", "STOPPED")
+
+
+def _get_runner_cls():
+    """Lazy import: torch/YOLO load only when a runner actually starts. A separate
+    function so tests can stub the heavyweight class."""
+    from .runner import DartRunner   # noqa: PLC0415
+    return DartRunner
 
 
 def _probe_cameras(skip=None):
-    """Best-effort list of working camera indices. Opens each index briefly on the
-    configured backend and keeps the ones that deliver a frame. `skip` (the index a
-    running DART already holds) is reported as available without re-opening it, since
-    the OS won't let us open a camera that's already in use."""
-    import cv2                       # local import keeps the landing page light
-    from config import CAM_BACKEND
-
-    found = []
-    for i in range(MAX_CAMERA_PROBE):
-        if skip is not None and i == skip:
-            found.append(i)
-            continue
-        cap = None
-        try:
-            cap = cv2.VideoCapture(i, CAM_BACKEND)
-            if cap.isOpened():
-                ok, frame = cap.read()
-                if ok and frame is not None:
-                    found.append(i)
-        except Exception:
-            pass
-        finally:
-            if cap is not None:
-                cap.release()
-    return sorted(set(found))
+    """Working camera indices (see core.camera.probe_cameras). `skip` is the index a
+    running DART already holds — reported as available without re-opening it. The
+    import stays local so the landing page loads without cv2."""
+    from core.camera import probe_cameras
+    with _probe_lock:
+        return probe_cameras(skip=skip)
 
 
 def _probe_ports():
@@ -81,12 +74,24 @@ def start():
     global _runner
     camera = request.form.get("camera", type=int)   # None -> runner uses config CAM_INDEX
     port = request.form.get("port") or None          # None/"" -> runner uses config PORT
-    from .runner import DartRunner   # lazy: pulls in torch/YOLO only when actually starting
 
+    # Heavy import outside the lock (Python's import machinery serializes it), so
+    # /state and /cameras aren't blocked for the 10-20s a first import can take.
+    runner_cls = _get_runner_cls()
+
+    # Check-and-create is atomic under the lock: two near-simultaneous POSTs must
+    # never both decide to create/replace. A second /start during model load used
+    # to kill the healthy loading runner — the "instant stop after startup" bug.
     with _runner_lock:
-        if _runner is not None:
-            _runner.stop()
-        _runner = DartRunner(camera=camera, port=port)
+        r = _runner
+        if r is not None:
+            status = r.get_state().get("status")
+            if r.is_alive() and status not in _DEAD_STATUSES:
+                print(f"[INFO] /start ignored — runner already active (status={status}).")
+                return redirect(url_for("run_view"))
+            print(f"[INFO] Replacing dead runner (status={status}).")
+            r.stop(reason="/start replacing dead runner")
+        _runner = runner_cls(camera=camera, port=port)
         _runner.start()
     return redirect(url_for("run_view"))
 
@@ -95,7 +100,11 @@ def start():
 def cameras():
     with _runner_lock:
         r = _runner
-        cur = r.camera if r is not None else None
+    cur = r.camera if r is not None else None
+    # While a runner is still claiming its camera, don't open ANY device — a probe
+    # holding the index mid-startup makes the runner's own open fail.
+    if r is not None and r.get_state().get("status") in _STARTING_STATUSES:
+        return jsonify({"cameras": [cur], "current": cur})
     idxs = _probe_cameras(skip=cur)
     if cur is not None and cur not in idxs:
         idxs = sorted(set(idxs + [cur]))
@@ -137,7 +146,7 @@ def stop():
     with _runner_lock:
         r, _runner = _runner, None
     if r is not None:
-        r.stop()
+        r.stop(reason="/stop route")
     return ("", 204)
 
 

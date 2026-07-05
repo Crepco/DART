@@ -11,6 +11,12 @@ all import cleanly, then starts the Flask app. Run:
 import pathlib
 import sys
 
+# Line-buffer stdout even when piped/redirected. Python block-buffers piped stdout,
+# so [INFO]/[WARN] prints lag far behind OpenCV's unbuffered stderr warnings — the
+# resulting misordered logs make failures look like mysteries.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+
 HERE = pathlib.Path(__file__).resolve().parent   # scripts/
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))

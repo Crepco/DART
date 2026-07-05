@@ -5,7 +5,36 @@ import cv2
 
 from config import (CAM_WIDTH, CAM_HEIGHT, CAM_FPS, CAM_BACKEND, CAM_FOURCC,
                     CAM_MAX_READ_FAILURES, CAM_RECONNECT_DELAY,
-                    CAM_RECONNECT_MAX_DELAY, CAM_READ_FAIL_SLEEP)
+                    CAM_RECONNECT_MAX_DELAY, CAM_READ_FAIL_SLEEP,
+                    CAM_OPEN_RETRIES, CAM_OPEN_RETRY_DELAY)
+
+
+PROBE_MAX_INDEX = 6   # scan indices 0..5 when looking for connected cameras
+
+
+def probe_cameras(max_index: int = PROBE_MAX_INDEX, skip: int | None = None):
+    """Best-effort list of camera indices that deliver a frame. Opens each index
+    briefly on the configured backend. `skip` (an index the caller already holds
+    open) is reported as available without re-opening it, since the OS won't let
+    us open a camera that's already in use."""
+    found = []
+    for i in range(max_index):
+        if skip is not None and i == skip:
+            found.append(i)
+            continue
+        cap = None
+        try:
+            cap = cv2.VideoCapture(i, CAM_BACKEND)
+            if cap.isOpened():
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    found.append(i)
+        except Exception:
+            pass
+        finally:
+            if cap is not None:
+                cap.release()
+    return sorted(set(found))
 
 
 class CameraStream:
@@ -22,9 +51,21 @@ class CameraStream:
         self._src     = src
         self._lock    = threading.Lock()
         self._stopped = False
-        self.cap      = self._open()
+        # DSHOW may refuse an index for a second or two after another process
+        # releases the device, so the startup open gets several logged attempts
+        # (mid-stream failures already have their own reconnect loop below).
+        self.cap = None
+        for attempt in range(1, CAM_OPEN_RETRIES + 1):
+            self.cap = self._open()
+            if self.cap is not None:
+                break
+            print(f"[CAM] Open attempt {attempt}/{CAM_OPEN_RETRIES} failed for "
+                  f"camera {src} (backend={CAM_BACKEND}).")
+            if attempt < CAM_OPEN_RETRIES:
+                time.sleep(CAM_OPEN_RETRY_DELAY)
         if self.cap is None:
-            raise RuntimeError(f"Camera {src} not available. Try --camera 0 or 1")
+            raise RuntimeError(f"Camera {src} not available "
+                               f"(after {CAM_OPEN_RETRIES} attempts)")
         self.grabbed, self.frame = self.cap.read()
         self._thread  = threading.Thread(target=self._update, daemon=True)
         self._thread.start()

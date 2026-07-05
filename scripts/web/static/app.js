@@ -9,8 +9,13 @@ function paint(s) {
   if (s.status === "ERROR") {
     banner.textContent = "⚠ " + (s.error || "Runner error");
     banner.classList.remove("hidden"); banner.classList.add("err");
-  } else if (!s.running || ["STARTING", "LOADING MODELS", "RUNNING"].includes(s.status) && s.fps === undefined) {
-    banner.textContent = "Starting camera + loading models…";
+  } else if (s.status === "STOPPED") {
+    banner.textContent = "Runner stopped.";
+    banner.classList.remove("hidden", "err");
+  } else if (!s.running || ["STARTING", "LOADING MODELS"].includes(s.status)
+             || (s.status === "RUNNING" && s.fps === undefined)) {
+    const t = s.elapsed != null ? ` (${Math.round(s.elapsed)}s)` : "";
+    banner.textContent = "Starting camera + loading models…" + t;
     banner.classList.remove("hidden", "err");
   } else {
     banner.classList.add("hidden");

@@ -90,6 +90,7 @@ class DartRunner:
         self.camera = CAM_INDEX if camera is None else camera
         self.port   = PORT if port is None else port
 
+        self._t0         = time.monotonic()   # for the loading-progress banner
         self._lock       = threading.Lock()
         self._cam_lock   = threading.Lock()   # guards hot-swapping self.cam
         self._frame_jpeg: bytes | None = None
@@ -107,10 +108,19 @@ class DartRunner:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def stop(self):
+    def stop(self, reason: str = "", join_timeout: float = 10.0):
+        # Every stop is attributable: a runner exiting with no [ERROR] and no
+        # stop-request log line means something is wrong with THIS code path.
+        print(f"[INFO] Runner stop requested{f' ({reason})' if reason else ''}.")
         self._stopped = True
         if self._thread:
-            self._thread.join(timeout=5.0)
+            self._thread.join(timeout=join_timeout)
+            if self._thread.is_alive():
+                print("[WARN] Runner thread still alive after "
+                      f"{join_timeout:.0f}s join (mid model-load?).")
+
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
     # ------------------------------------------------------------------ access
     def get_frame_jpeg(self) -> bytes | None:
@@ -119,7 +129,10 @@ class DartRunner:
 
     def get_state(self) -> dict:
         with self._lock:
-            return dict(self._state)
+            state = dict(self._state)
+        if state.get("status") in ("STARTING", "LOADING MODELS"):
+            state["elapsed"] = round(time.monotonic() - self._t0, 1)
+        return state
 
     def set_camera(self, index: int):
         """Hot-swap the capture device without reloading models/serial.
@@ -160,12 +173,25 @@ class DartRunner:
         finally:
             self._teardown()
 
+    def _camera_error(self) -> str:
+        """Actionable message for the UI banner: name the indices that DO work."""
+        from core.camera import probe_cameras
+        working = [i for i in probe_cameras() if i != self.camera]
+        if working:
+            return (f"Camera {self.camera} not available. "
+                    f"Working cameras: {working}")
+        return (f"Camera {self.camera} not available and no other working "
+                f"camera found — is the webcam in use by another app?")
+
     def _setup_camera(self):
-        cam = CameraStream(src=self.camera)
+        try:
+            cam = CameraStream(src=self.camera)
+        except RuntimeError:
+            raise RuntimeError(self._camera_error()) from None
         grabbed, test = cam.read()
         if not grabbed or test is None:
             cam.stop()
-            raise RuntimeError("Camera opened but returned no frame.")
+            raise RuntimeError(f"Camera {self.camera} opened but returned no frame.")
         print(f"[INFO] Camera OK — {test.shape[1]}x{test.shape[0]}")
         return cam
 
