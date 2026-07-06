@@ -1,6 +1,6 @@
-// Polls /state ~5x/sec and paints the status strip.
-// The video itself is a plain MJPEG <img>, so JS only handles telemetry + the
-// "Authorize Person" flow.
+// Run page telemetry: polls /state ~5x/sec and paints the status strip.
+// The video is a plain MJPEG <img>; the Authorize Person block lives in the
+// shared authorize.js.
 
 const $ = (id) => document.getElementById(id);
 const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
@@ -53,82 +53,3 @@ async function tick() {
 
 setInterval(tick, 200);
 tick();
-
-// ── Authorize Person ─────────────────────────────────────────────────────
-const authName    = $("authName");
-const authCapture = $("authCapture");
-const authFiles   = $("authFiles");
-
-function authMsg(text, cls) {
-  const el = $("authMsg");
-  if (el) { el.textContent = text || ""; el.className = "auth-msg" + (cls ? " " + cls : ""); }
-}
-
-async function refreshAuthorized() {
-  try {
-    const j = await (await fetch("/authorized", { cache: "no-store" })).json();
-    const names = j.identities || [];
-    set("authList", names.length ? "authorized: " + names.join(", ")
-                                 : "no one authorized yet");
-  } catch (e) { /* keep whatever is there */ }
-}
-
-// POST an enrollment request; on "name exists" ask to overwrite and retry once.
-async function submitAuth(url, buildBody) {
-  const name = (authName.value || "").trim();
-  if (!name) { authMsg("⚠ enter a name first", "err"); return; }
-
-  authCapture.disabled = true;
-  authMsg(url === "/authorize" ? "capturing… look at the camera, hold still"
-                               : "processing photos…");
-  try {
-    let res = await fetch(url, { method: "POST", body: buildBody(name, false) });
-    let j = await res.json();
-    if (res.status === 409 && j.error === "exists") {
-      if (!window.confirm(`"${name}" is already authorized. Overwrite?`)) {
-        authMsg(""); return;
-      }
-      res = await fetch(url, { method: "POST", body: buildBody(name, true) });
-      j = await res.json();
-    }
-    if (j.ok) {
-      authMsg(`✔ ${j.name} authorized (${j.accepted}/${j.captured} frames)`, "ok");
-      authName.value = "";
-      refreshAuthorized();
-    } else {
-      authMsg("⚠ " + (j.error || "enrollment failed"), "err");
-    }
-  } catch (e) {
-    authMsg("⚠ request failed", "err");
-  } finally {
-    authCapture.disabled = false;
-    authFiles.value = "";
-  }
-}
-
-if (authCapture) {
-  authCapture.addEventListener("click", () => {
-    submitAuth("/authorize", (name, overwrite) => {
-      const b = new URLSearchParams();
-      b.set("name", name);
-      if (overwrite) b.set("overwrite", "1");
-      return b;
-    });
-  });
-}
-
-if (authFiles) {
-  authFiles.addEventListener("change", () => {
-    if (!authFiles.files.length) return;
-    const files = [...authFiles.files];   // keep a copy; the input is cleared after
-    submitAuth("/authorize/upload", (name, overwrite) => {
-      const fd = new FormData();
-      fd.set("name", name);
-      if (overwrite) fd.set("overwrite", "1");
-      files.forEach((f) => fd.append("photos", f));
-      return fd;
-    });
-  });
-}
-
-refreshAuthorized();

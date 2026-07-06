@@ -65,13 +65,67 @@ def _get_classifier(r):
         return _fallback_classifier
 
 
+_probe_cache: list = []   # last successful probe result (see _probe_cameras)
+
+
 def _probe_cameras(skip=None):
     """Working camera indices (see core.camera.probe_cameras). `skip` is the index a
     running DART already holds — reported as available without re-opening it. The
-    import stays local so the landing page loads without cv2."""
+    import stays local so the landing page loads without cv2.
+
+    Non-blocking on the probe lock: a standalone enrollment capture holds the
+    device (and the lock) for its whole ~2.4s window, and a stalled camera
+    dropdown is worse than a slightly stale list — so serve the cached result
+    while the lock is busy; it self-corrects on the next successful probe."""
+    global _probe_cache
     from core.camera import probe_cameras
+    if not _probe_lock.acquire(blocking=False):
+        return list(_probe_cache)
+    try:
+        found = probe_cameras(skip=skip)
+        _probe_cache = found
+        return found
+    finally:
+        _probe_lock.release()
+
+
+def _standalone_frames(camera, n, interval):
+    """Grab `n` frames over ~n*interval seconds straight from the camera, for
+    enrollment while DART is stopped. Returns a list (None for failed reads);
+    raises RuntimeError if the device won't open.
+
+    Holds _probe_lock for the window — the device is exclusive anyway, and the
+    lock keeps probes from fighting it (/cameras serves its cache meanwhile).
+    If the user launches DART mid-capture, the runner's camera-open retry
+    (5 x 0.6s) outlasts this window, so both sides succeed."""
+    import cv2
+    from config import CAM_BACKEND
+
+    frames = []
     with _probe_lock:
-        return probe_cameras(skip=skip)
+        cap = cv2.VideoCapture(camera, CAM_BACKEND)
+        try:
+            if not cap.isOpened():
+                raise RuntimeError(
+                    f"camera {camera} unavailable (in use or not connected)")
+            for i in range(n):
+                ok, frame = cap.read()
+                frames.append(frame if ok else None)
+                if i < n - 1:
+                    time.sleep(interval)
+        finally:
+            cap.release()
+    return frames
+
+
+def _runner_frames(r, n, interval):
+    """Grab `n` raw frames from a live runner over ~n*interval seconds."""
+    frames = []
+    for i in range(n):
+        frames.append(r.get_raw_frame())
+        if i < n - 1:
+            time.sleep(interval)
+    return frames
 
 
 def _probe_ports():
@@ -223,9 +277,13 @@ def authorized():
 
 @app.route("/authorize", methods=["POST"])
 def authorize():
-    """Enroll from the live feed: grab frames over a short window, keep the
-    quality-gated ones, and save only if enough survived."""
-    from config import (ENROLL_FRAMES, ENROLL_FRAME_INTERVAL, ENROLL_MIN_ACCEPTED)
+    """Enroll from a live camera burst — works with DART running OR stopped.
+
+    Dispatch: runner alive -> capture from its raw frames; runner starting ->
+    409 (never fight it for the device); no runner -> open the camera directly
+    (_standalone_frames) and embed via the cached fallback classifier."""
+    from config import (CAM_INDEX, ENROLL_FRAMES, ENROLL_FRAME_INTERVAL,
+                        ENROLL_MIN_ACCEPTED)
 
     name = (request.form.get("name") or "").strip()
     overwrite = request.form.get("overwrite") == "1"
@@ -233,27 +291,35 @@ def authorize():
         return jsonify({"ok": False, "error": "missing name"}), 400
 
     r = _runner_ref()
-    if r is None or not r.is_alive():
-        return jsonify({"ok": False, "error": "DART is not running"}), 409
-    if r.get_raw_frame() is None:
-        return jsonify({"ok": False, "error": "DART is still starting"}), 409
+    live = r is not None and r.is_alive()
+    if live and r.get_raw_frame() is None:
+        return jsonify({"ok": False,
+                        "error": "DART is starting — try again shortly"}), 409
 
-    clf = _get_classifier(r)
+    clf = _get_classifier(r if live else None)
     if not overwrite and name in clf.db:
         return jsonify({"ok": False, "error": "exists", "name": name}), 409
 
+    try:
+        if live:
+            frames = _runner_frames(r, ENROLL_FRAMES, ENROLL_FRAME_INTERVAL)
+        else:
+            camera = request.form.get("camera", type=int)
+            frames = _standalone_frames(CAM_INDEX if camera is None else camera,
+                                        ENROLL_FRAMES, ENROLL_FRAME_INTERVAL)
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+
     embeddings, reasons = [], []
-    for _ in range(ENROLL_FRAMES):
-        frame = r.get_raw_frame()
+    for frame in frames:
         if frame is None:
             reasons.append("no frame")
+            continue
+        emb, why = clf.extract_embedding(frame)
+        if emb is not None:
+            embeddings.append(emb)
         else:
-            emb, why = clf.extract_embedding(frame)
-            if emb is not None:
-                embeddings.append(emb)
-            else:
-                reasons.append(why)
-        time.sleep(ENROLL_FRAME_INTERVAL)
+            reasons.append(why)
 
     if len(embeddings) < ENROLL_MIN_ACCEPTED:
         return jsonify({

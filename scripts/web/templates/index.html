@@ -39,6 +39,21 @@
         </ul>
         <button type="submit">Launch DART →</button>
       </form>
+
+      <div class="card dart">
+        <h2>Authorize</h2>
+        <p>Enroll a face as <strong>AUTHORIZED</strong> — works whether DART is
+           running or stopped (uses the camera selected above).</p>
+        <div class="auth-block">
+          <input id="authName" class="auth-input" type="text" placeholder="name"
+                 autocomplete="off" spellcheck="false">
+          <button id="authCapture" class="auth-btn" type="button">◉ Capture from camera</button>
+          <label class="auth-upload" for="authFiles">or upload photos…</label>
+          <input id="authFiles" type="file" accept="image/jpeg,image/png" multiple hidden>
+          <div class="auth-msg" id="authMsg"></div>
+          <div class="auth-list" id="authList"></div>
+        </div>
+      </div>
     </section>
 
     <footer class="foot">
@@ -46,5 +61,6 @@
     </footer>
   </main>
   <script src="{{ url_for('static', filename='landing.js') }}"></script>
+  <script src="{{ url_for('static', filename='authorize.js') }}"></script>
 </body>
 </html>
