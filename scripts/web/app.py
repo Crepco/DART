@@ -69,14 +69,11 @@ _probe_cache: list = []   # last successful probe result (see _probe_cameras)
 
 
 def _probe_cameras(skip=None):
-    """Working camera indices (see core.camera.probe_cameras). `skip` is the index a
-    running DART already holds — reported as available without re-opening it. The
-    import stays local so the landing page loads without cv2.
-
-    Non-blocking on the probe lock: a standalone enrollment capture holds the
-    device (and the lock) for its whole ~2.4s window, and a stalled camera
-    dropdown is worse than a slightly stale list — so serve the cached result
-    while the lock is busy; it self-corrects on the next successful probe."""
+    """Working camera indices (core.camera.probe_cameras); `skip` = the index a
+    running DART holds, reported without re-opening. Non-blocking: while an
+    enrollment capture holds the probe lock (~2.4s), serve the cached last
+    result — a slightly stale dropdown beats a stalled one. Local import keeps
+    the landing page cv2-free."""
     global _probe_cache
     from core.camera import probe_cameras
     if not _probe_lock.acquire(blocking=False):
@@ -90,14 +87,11 @@ def _probe_cameras(skip=None):
 
 
 def _standalone_frames(camera, n, interval):
-    """Grab `n` frames over ~n*interval seconds straight from the camera, for
-    enrollment while DART is stopped. Returns a list (None for failed reads);
-    raises RuntimeError if the device won't open.
-
-    Holds _probe_lock for the window — the device is exclusive anyway, and the
-    lock keeps probes from fighting it (/cameras serves its cache meanwhile).
-    If the user launches DART mid-capture, the runner's camera-open retry
-    (5 x 0.6s) outlasts this window, so both sides succeed."""
+    """Enrollment frames while DART is stopped: open the camera directly, grab
+    `n` frames over ~n*interval s (None for failed reads), always release.
+    Holds _probe_lock for the window (device is exclusive; /cameras serves its
+    cache meanwhile). A DART launch mid-capture is safe: the runner's open-retry
+    (5 x 0.6s) outlasts this window."""
     import cv2
     from config import CAM_BACKEND
 
@@ -153,13 +147,13 @@ def start():
     camera = request.form.get("camera", type=int)   # None -> runner uses config CAM_INDEX
     port = request.form.get("port") or None          # None/"" -> runner uses config PORT
 
-    # Heavy import outside the lock (Python's import machinery serializes it), so
-    # /state and /cameras aren't blocked for the 10-20s a first import can take.
+    # Heavy import outside the lock so /state and /cameras aren't blocked for
+    # the 10-20s a first torch import can take.
     runner_cls = _get_runner_cls()
 
-    # Check-and-create is atomic under the lock: two near-simultaneous POSTs must
-    # never both decide to create/replace. A second /start during model load used
-    # to kill the healthy loading runner — the "instant stop after startup" bug.
+    # Check-and-create is atomic under the lock; a live runner is never replaced.
+    # (A second /start mid-load once killed the healthy runner — the "instant
+    # stop after startup" bug.)
     with _runner_lock:
         r = _runner
         if r is not None:

@@ -40,11 +40,9 @@ def probe_cameras(max_index: int = PROBE_MAX_INDEX, skip: int | None = None):
 class CameraStream:
     """Threaded webcam capture that self-heals after read failures.
 
-    OpenCV's default Windows backend (MSMF) stalls USB webcams after ~60s
-    (grabFrame Error -1072873822). We open on DirectShow (see config.CAM_BACKEND)
-    and the background thread releases + reopens the device on repeated failures,
-    so a transient glitch — or even an unplug/replug — can't permanently kill the
-    stream.
+    Windows' default backend (MSMF) stalls USB webcams after ~60s, so we open on
+    DirectShow (config.CAM_BACKEND); the background thread releases + reopens the
+    device on repeated failures, surviving glitches and unplug/replug.
     """
 
     def __init__(self, src: int = 0):
@@ -52,8 +50,7 @@ class CameraStream:
         self._lock    = threading.Lock()
         self._stopped = False
         # DSHOW may refuse an index for a second or two after another process
-        # releases the device, so the startup open gets several logged attempts
-        # (mid-stream failures already have their own reconnect loop below).
+        # releases the device — retry the startup open, logging each attempt.
         self.cap = None
         for attempt in range(1, CAM_OPEN_RETRIES + 1):
             self.cap = self._open()
@@ -72,11 +69,7 @@ class CameraStream:
         self._thread.start()
 
     def _open(self):
-        """Open the capture on the configured backend and apply all props.
-
-        Returns an opened VideoCapture, or None on failure (the caller decides
-        whether that's fatal or a reconnect retry).
-        """
+        """Open on the configured backend; returns the capture or None on failure."""
         cap = cv2.VideoCapture(self._src, CAM_BACKEND)
         if not cap.isOpened():
             cap.release()
@@ -88,12 +81,8 @@ class CameraStream:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
         cap.set(cv2.CAP_PROP_FPS,          CAM_FPS)
-        # Low latency: keep only the newest frame. Often ignored by DSHOW, but
-        # the threaded latest-frame-wins loop below keeps latency low regardless.
-        cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
-        # Note: DSHOW may silently substitute the nearest supported resolution;
-        # the pipeline reads frame.shape dynamically, so that's tolerated. Log the
-        # mode it actually negotiated so a mismatch is visible.
+        cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)   # newest frame only (DSHOW may ignore)
+        # DSHOW may substitute the nearest supported mode — log what it negotiated.
         w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS)

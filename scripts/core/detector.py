@@ -213,12 +213,9 @@ class YOLODetector:
                 auth_statuses = {tid: self._track_manager.get_status(tid)
                                  for tid in current_ids}
 
-                # Stateless target selection: only confirmed UNAUTHORIZED persons
-                # are valid targets. None -> hold (person_box stays None) so the
-                # turret waits rather than chasing UNKNOWN/AUTHORIZED tracks. With
-                # 2+ UNAUTHORIZED, lock the closest — largest bbox area
-                # (x2-x1)*(y2-y1), i.e. nearest the camera — which is
-                # deterministic and so doesn't oscillate between targets.
+                # Stateless target selection: only confirmed-UNAUTHORIZED persons
+                # are targets (none -> hold). With several, lock the largest bbox
+                # (nearest the camera) — deterministic, so no target oscillation.
                 candidates = [(x1, y1, x2, y2, tid)
                               for (x1, y1, x2, y2, tid) in all_persons
                               if self._track_manager.get_status(tid) == "UNAUTHORIZED"]
@@ -257,11 +254,9 @@ class YOLODetector:
                 except Exception:
                     pass
 
-            # Fire gate reads the locked target's *persisted* auth status directly,
-            # so motion-blur frames (no detected/overlapping face) don't drop it to
-            # UNKNOWN and reset the fire dwell. The target is only ever locked
-            # because it is UNAUTHORIZED, so this is the correct, motion-robust
-            # source. No locked track → stays UNKNOWN → fire inhibited downstream.
+            # Fire gate reads the locked target's PERSISTED auth status, so a
+            # motion-blur frame can't drop it to UNKNOWN and reset the fire
+            # dwell. No locked track -> UNKNOWN -> fire inhibited downstream.
             if track_id is not None:
                 locked_face_auth = self._track_manager.get_status(track_id)
 

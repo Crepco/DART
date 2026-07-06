@@ -130,17 +130,15 @@ def main():
 
     ser = None
     try:
-        # write_timeout guards against an infinite hang when the port opens but
-        # nothing drains it (e.g. a phantom Bluetooth COM port, no Arduino).
+        # write_timeout: don't hang forever on a port nothing drains (phantom
+        # Bluetooth COM, no Arduino).
         ser = serial.Serial(args.port, BAUD_RATE, timeout=0.5, write_timeout=1.0)
-        # Opening the port asserts DTR, which resets boards like the Uno/Nano.
-        # Clear buffers immediately — BEFORE the Arduino boots — so we don't
-        # discard the one-shot "READY" it prints from setup() ~700ms later.
+        # Opening asserts DTR -> Uno resets. Clear buffers BEFORE it boots so
+        # the one-shot "READY" (~700ms later) isn't discarded.
         ser.reset_input_buffer()
         ser.reset_output_buffer()
         print("[INFO] Waiting for Arduino reset ...")
         got_ready = False
-        # Window must comfortably cover the board's reset + boot time.
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             if ser.in_waiting:
@@ -154,8 +152,8 @@ def main():
             send_stop(ser)
             print(f"[INFO] Serial ready on {args.port} @ {BAUD_RATE}")
         else:
-            # Port opened but no Arduino answered — don't let a dead port stall
-            # or stutter the loop. Drop to preview-only so the feed still shows.
+            # Port opened but no Arduino answered — preview-only beats a loop
+            # stalled on a dead port.
             print(f"[WARN] No READY handshake on {args.port} — no Arduino responding.")
             print("[WARN] Running in preview-only mode (no serial output).")
             ser.close()
@@ -259,16 +257,11 @@ def main():
             status = "TRACKING"
 
         elif smooth_cx is not None and no_body_count < FIRE_COAST_FRAMES:
-            # Coast through brief target loss during a tilt whip (motion blur drops
-            # the face — and sometimes the person box — for a few frames). Hold
-            # motion at zero so the turret settles via the command-EMA + slew
-            # limiter rather than driving blind; don't reset the PID here.
-            #
-            # Don't let a momentary no-target frame reset the dwell:
-            #   • person still tracked, face blurred out  -> keep accruing dwell
-            #   • whole target lost this frame (auth UNKNOWN) -> HOLD fire/lock_count
-            # lock_count is only reset in the lost branch below, after
-            # FIRE_COAST_FRAMES consecutive no-target frames — the N-frame grace.
+            # Coast through brief target loss (motion blur drops the face for a
+            # few frames): hold motion at zero — settle via EMA + slew, don't
+            # drive blind or reset the PID. The fire dwell keeps accruing while
+            # the target is still tracked UNAUTHORIZED and HOLDS otherwise;
+            # lock_count only resets in the lost branch below.
             no_body_count += 1
             error_x = smooth_cx - cx_frame
             error_y = smooth_cy - cy_frame

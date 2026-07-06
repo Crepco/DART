@@ -83,16 +83,11 @@ class TrackManager:
         return state.auth_status if state is not None else "UNKNOWN"
 
     def reset_unauthorized(self) -> int:
-        """Drop every confirmed-UNAUTHORIZED track back to UNKNOWN so it gets
-        re-classified against a freshly updated embeddings db (the frozen
-        UNAUTHORIZED verdict would otherwise keep a just-enrolled person targeted
-        until their track died).
-
-        Deliberately scoped: AUTHORIZED and UNKNOWN tracks are untouched, so
-        enrollment doesn't make every person in frame re-evaluate at once. The
-        affected tracks sit at UNKNOWN — never a target — until re-confirmed
-        (~2 verdicts), which fails safe: the turret holds rather than flickers.
-        Returns the number of tracks reset.
+        """After enrollment: drop confirmed-UNAUTHORIZED tracks to UNKNOWN so they
+        re-classify against the updated db (the frozen verdict would keep a
+        just-enrolled person targeted). Scoped on purpose — AUTHORIZED/UNKNOWN
+        tracks untouched; affected tracks sit at UNKNOWN (never a target) until
+        re-confirmed, so the turret holds rather than flickers. Returns count.
         """
         n = 0
         for state in self.tracks.values():
@@ -104,13 +99,11 @@ class TrackManager:
         return n
 
     def cleanup(self, active_ids, now: float | None = None):
-        """Time-based grace instead of instant deletion: ByteTrack only reports
-        ACTIVE tracks, so a track mid-dip (lost but still inside the tracker's
-        buffer) is absent from `active_ids` — deleting immediately wiped the
-        verdict a single missed frame before ByteTrack re-attached the same ID.
-        State survives TRACK_STATE_GRACE_S seconds unseen (time, not frames, so
-        the budget doesn't vary with detector fps). `now` is injectable for
-        tests."""
+        """Delete state only after TRACK_STATE_GRACE_S seconds unseen. ByteTrack
+        reports only ACTIVE tracks, so a mid-dip track is absent from active_ids —
+        instant deletion wiped verdicts one missed frame before the tracker
+        re-attached the same ID. Time-based (not frames) so the budget doesn't
+        vary with detector fps. `now` injectable for tests."""
         now = time.monotonic() if now is None else now
         active = set(active_ids)
         for tid, state in list(self.tracks.items()):

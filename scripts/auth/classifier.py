@@ -8,12 +8,9 @@ import time
 import cv2
 import numpy as np
 
-# onnxruntime-gpu's CUDA provider needs the CUDA 12 / cuDNN 9 runtime DLLs
-# (cublasLt64_12.dll, cudnn64_9.dll, ...). The torch+cu126 wheel already bundles
-# them in torch/lib, but onnxruntime doesn't search there — so without this it
-# fails to load onnxruntime_providers_cuda.dll and silently drops to CPU.
-# Register that dir on the DLL search path before insightface imports onnxruntime.
-# Windows-only (no-op elsewhere).
+# onnxruntime-gpu needs the CUDA/cuDNN DLLs that the torch+cu126 wheel bundles in
+# torch/lib, but doesn't search there — register that dir BEFORE insightface
+# imports onnxruntime, or it silently drops to CPU. Windows-only (no-op elsewhere).
 if hasattr(os, "add_dll_directory"):
     try:
         import torch
