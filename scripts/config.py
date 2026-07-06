@@ -93,6 +93,10 @@ ENROLL_MIN_SHARPNESS  = 60.0  # variance-of-Laplacian on the face crop
 
 # ── Auth ──
 SIMILARITY_THRESHOLD     = 0.4
+AUTH_MIN_CROP    = 120   # px: person crops smaller than this on either side get
+AUTH_UPSCALE     = 2.0   # upscaled before InsightFace detection — a distant face
+                         # the 256px detector would miss otherwise returns UNKNOWN
+                         # forever, which stalls the verdict debounce indefinitely.
 CLASSIFY_EVERY_N_FRAMES  = 10   # steady-state re-check cadence for a confirmed track
 CLASSIFY_EVERY_N_FRAMES_UNCONFIRMED = 1   # classify every frame until a track is confirmed
 DEBOUNCE_COUNT           = 5    # agreeing reads to *flip* an already-established status

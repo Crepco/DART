@@ -349,6 +349,7 @@ class DartRunner:
                     last_send = now
 
             ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            clf = detector.classifier
             state = {
                 "running": True, "status": status,
                 "track_id": track_id, "n_persons": len(all_persons),
@@ -357,6 +358,9 @@ class DartRunner:
                 "serial": "connected" if self.link else "preview",
                 "camera": self.camera,
                 "fps": round(fps, 1),
+                "auth_provider": clf.provider,
+                "auth_ms": (round(clf.classify_ms) if clf.classify_ms is not None
+                            else None),
             }
             with self._lock:
                 if ok:

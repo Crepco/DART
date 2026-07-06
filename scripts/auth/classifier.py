@@ -3,6 +3,7 @@
 import os
 import pickle
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -24,8 +25,12 @@ if hasattr(os, "add_dll_directory"):
 
 from insightface.app import FaceAnalysis
 
-from config import (SIMILARITY_THRESHOLD, EMBEDDINGS_PATH,
+from config import (SIMILARITY_THRESHOLD, EMBEDDINGS_PATH, CAM_WIDTH, CAM_HEIGHT,
+                    AUTH_MIN_CROP, AUTH_UPSCALE,
                     ENROLL_MIN_FACE, ENROLL_MIN_DET_SCORE, ENROLL_MIN_SHARPNESS)
+
+SLOW_CLASSIFY_MS = 200.0   # per-verdict latency worth a console warning
+SLOW_LOG_EVERY_S = 5.0     # ...but rate-limit the warning
 
 
 class FaceClassifier:
@@ -39,14 +44,27 @@ class FaceClassifier:
         # dominant per-classify CPU cost. 256 is noticeably faster than 320 and
         # still resolves faces inside the (already cropped) person box.
         self.app.prepare(ctx_id=0, det_size=(256, 256))
-        self._warn_if_cpu_fallback()
+        self.provider = "CPU"          # set properly by _detect_provider
+        self._detect_provider()
 
         # classify() runs on the detector's worker thread; extract_embedding()
         # runs on Flask request threads — one session, one user at a time.
         self._session_lock = threading.Lock()
 
+        self.classify_ms: float | None = None   # EMA of per-verdict latency
+        self._last_slow_log = 0.0
+
         self.db = {}
+        self._ref_mat = None           # (N, 512) stacked embeddings for matching
         self.reload_db()
+
+        # Warm-up: the first ONNX run pays session/graph init (can be ~1s); take
+        # that hit here rather than on the first real verdict. Same trick as
+        # YOLODetector's dummy inference.
+        t0 = time.perf_counter()
+        self.app.get(np.zeros((CAM_HEIGHT, CAM_WIDTH, 3), dtype=np.uint8))
+        print(f"[INFO] InsightFace warm-up: {(time.perf_counter() - t0) * 1000:.0f}ms "
+              f"(provider={self.provider})")
 
     def reload_db(self):
         """(Re)load the authorized-embeddings pkl. Called at init and after the web
@@ -63,6 +81,10 @@ class FaceClassifier:
             print(f"[WARN] Embeddings file not found ({EMBEDDINGS_PATH}).")
 
         self.db = db
+        # Stack refs into one matrix: matching is a single matvec instead of a
+        # Python loop, and stays flat as identities are added.
+        self._ref_mat = (np.stack(list(db.values())).astype(np.float32)
+                         if db else None)
         if not self.db:
             print("[WARN] No authorized embeddings loaded — run enroll.py. "
                   "All detected faces will read UNAUTHORIZED.")
@@ -70,14 +92,16 @@ class FaceClassifier:
             print(f"[INFO] Loaded {len(self.db)} authorized identities: "
                   f"{', '.join(self.db.keys())}")
 
-    def _warn_if_cpu_fallback(self):
-        """Loud, actionable warning when classify() landed on CPU despite a GPU
-        being present — almost always the CPU `onnxruntime` (pulled in by
-        insightface) shadowing onnxruntime-gpu after `pip install -r requirements.txt`.
-        Stays silent on a genuinely CPU-only host."""
+    def _detect_provider(self):
+        """Set self.provider so the UI can show what classify() actually runs on.
+        "CPU (degraded)" — CPU inference despite a CUDA GPU being present — is
+        almost always the CPU `onnxruntime` (pulled in by insightface) shadowing
+        onnxruntime-gpu after `pip install -r requirements.txt`; it costs 5-10x
+        per verdict, dwarfing any other latency fix, so it must never be silent."""
         on_gpu = any(m.session.get_providers()[0] == "CUDAExecutionProvider"
                      for m in self.app.models.values())
         if on_gpu:
+            self.provider = "CUDA"
             print("[INFO] InsightFace running on GPU (CUDAExecutionProvider).")
             return
         try:
@@ -86,7 +110,9 @@ class FaceClassifier:
         except Exception:
             gpu_present = False
         if not gpu_present:
-            return   # no NVIDIA GPU — CPU is expected, nothing to warn about
+            self.provider = "CPU"   # no NVIDIA GPU — CPU is expected
+            return
+        self.provider = "CPU (degraded)"
         print("[WARN] InsightFace fell back to CPU though a CUDA GPU is present.")
         print("[WARN] The CPU 'onnxruntime' (pulled in by insightface) is shadowing "
               "onnxruntime-gpu. Restore GPU with:")
@@ -96,6 +122,23 @@ class FaceClassifier:
     def classify(self, crop) -> str:
         if crop is None or crop.size == 0:
             return "UNKNOWN"
+        t0 = time.perf_counter()
+        verdict = self._classify(crop)
+        ms = (time.perf_counter() - t0) * 1000.0
+        self.classify_ms = (ms if self.classify_ms is None
+                            else 0.8 * self.classify_ms + 0.2 * ms)
+        if ms > SLOW_CLASSIFY_MS and time.monotonic() - self._last_slow_log > SLOW_LOG_EVERY_S:
+            self._last_slow_log = time.monotonic()
+            print(f"[WARN] Slow face classify: {ms:.0f}ms (provider={self.provider})")
+        return verdict
+
+    def _classify(self, crop) -> str:
+        # A face that's tiny inside the person crop slips past the 256px detector
+        # and returns UNKNOWN — which never advances the verdict debounce, so a
+        # distant person would stay verdict-less indefinitely. Upscale small crops.
+        if min(crop.shape[:2]) < AUTH_MIN_CROP:
+            crop = cv2.resize(crop, None, fx=AUTH_UPSCALE, fy=AUTH_UPSCALE,
+                              interpolation=cv2.INTER_LINEAR)
 
         with self._session_lock:
             faces = self.app.get(crop)
@@ -105,11 +148,8 @@ class FaceClassifier:
         face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
         emb = face.normed_embedding
 
-        best = -1.0
-        for ref in self.db.values():
-            score = float(np.dot(emb, ref))
-            if score > best:
-                best = score
+        ref_mat = self._ref_mat   # local ref: reload_db() may swap it mid-call
+        best = float((ref_mat @ emb).max()) if ref_mat is not None else -1.0
 
         return "AUTHORIZED" if best >= SIMILARITY_THRESHOLD else "UNAUTHORIZED"
 

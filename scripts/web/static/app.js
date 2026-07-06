@@ -26,6 +26,20 @@ function paint(s) {
   set("serial", s.serial === "connected" ? "● connected"
               : s.serial === "preview"   ? "○ preview (no R3)" : "—");
   set("fps", s.fps != null ? s.fps.toFixed(1) : "—");
+
+  // Face-auth backend + per-verdict latency. "CPU (degraded)" means a CUDA GPU
+  // is present but onnxruntime-gpu is shadowed — 5-10x slower, styled as warning.
+  const authEl = $("auth");
+  if (authEl) {
+    if (s.auth_provider) {
+      authEl.textContent = s.auth_provider
+        + (s.auth_ms != null ? ` · ${s.auth_ms}ms` : "");
+      authEl.classList.toggle("warn", s.auth_provider.includes("degraded"));
+    } else {
+      authEl.textContent = "—";
+      authEl.classList.remove("warn");
+    }
+  }
 }
 
 async function tick() {

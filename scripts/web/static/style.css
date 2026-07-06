@@ -121,6 +121,7 @@ code { font-family: var(--mono); color: var(--cyan); background: #0d1512;
   padding: 9px 0; border-bottom: 1px dashed #182320; }
 .row .k { color: var(--muted); font-size: 13px; }
 .row .v { font-family: var(--mono); font-size: 14px; color: var(--ink); }
+.row .v.warn { color: var(--amber); }
 
 .cam-select { background: #0d1512; color: var(--ink); border: 1px solid var(--line);
   border-radius: 7px; padding: 5px 8px; font-family: var(--mono); font-size: 13px; cursor: pointer; }
