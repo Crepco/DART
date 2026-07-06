@@ -67,6 +67,7 @@ class CameraStream:
             raise RuntimeError(f"Camera {src} not available "
                                f"(after {CAM_OPEN_RETRIES} attempts)")
         self.grabbed, self.frame = self.cap.read()
+        self.seq = 1 if self.grabbed else 0   # bumps on every fresh frame
         self._thread  = threading.Thread(target=self._update, daemon=True)
         self._thread.start()
 
@@ -116,6 +117,7 @@ class CameraStream:
             if g and f is not None:
                 with self._lock:
                     self.grabbed, self.frame = True, f
+                    self.seq += 1
                 if fails:
                     print("[CAM] Recovered — stream healthy again.")
                 fails   = 0
@@ -162,6 +164,15 @@ class CameraStream:
     def read(self):
         with self._lock:
             return self.grabbed, (self.frame.copy() if self.frame is not None else None)
+
+    def read_seq(self):
+        """(grabbed, frame, seq) — seq identifies the frame, so a control loop can
+        wait for a NEW frame instead of re-processing the latest one at CPU speed
+        (which collapses the PID derivative and distorts the per-frame EMAs)."""
+        with self._lock:
+            return (self.grabbed,
+                    self.frame.copy() if self.frame is not None else None,
+                    self.seq)
 
     def stop(self):
         self._stopped = True

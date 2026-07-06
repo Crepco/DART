@@ -60,19 +60,38 @@ OUTPUT_DEADBAND = 4
 INPUT_DEADBAND  = 30   # px stop-zone — must be < LOCK_ON_RADIUS so it settles inside fire zone
 
 # ── PID Gains (tuning guide: docs/ARCHITECTURE.md) ──
-PAN_KP,  PAN_KI,  PAN_KD  = 0.075, 0.001, 0.15
-TILT_KP, TILT_KI, TILT_KD = 0.04, 0.001, 0.09
+# KI=0 on purpose: at KI=0.001 the clamped integral contributed <=0.01 units
+# (noise), while still being a windup liability. Tradeoff: nothing corrects
+# steady-state bias now (off-axis mount, backlash) — if a persistent small-angle
+# offset appears, restore a small KI (~0.001-0.005) rather than chasing a "bug".
+PAN_KP,  PAN_KI,  PAN_KD  = 0.075, 0.0, 0.15
+TILT_KP, TILT_KI, TILT_KD = 0.04, 0.0, 0.09
 INTEGRAL_CLAMP = 10.0
 D_SMOOTH = 0.70     # derivative low-pass (weight on previous) — stops D-term amplifying detection noise
 
 # ── Smoothing ──
-SMOOTH     = 0.90   # centroid EMA (weight on previous value)
-CMD_SMOOTH = 0.85   # servo command EMA — softer onset; new-sample weight = 1-CMD_SMOOTH ≈ 0.15
+# SMOOTH is the dominant measurement lag: tau ~ 1/(1-SMOOTH) frames. 0.90 meant
+# ~10 frames (~0.7s at 15fps) of phase lag — the turret was always steering at
+# where the target USED to be, the main overshoot driver. 0.70 ~ 3.3 frames.
+# Tradeoff: less jitter filtering. If new at-rest oscillation appears on
+# hardware, step to 0.80 before anything else.
+SMOOTH           = 0.70   # centroid EMA (weight on previous value)
+CMD_SMOOTH       = 0.85   # servo command EMA onset (attack) — softer spin-up
+CMD_SMOOTH_DECAY = 0.50   # ...but release faster than attack: after the PID says
+                          # "stop", 0.85 kept the turret coasting ~0.4s past center
 
 # ── Slew Rate (servo-offset units / second, dt-scaled) ──
 MAX_CMD_CHANGE_PER_SEC_PAN  = 25.0   # pan slew rate
 MAX_CMD_CHANGE_PER_SEC_TILT = 15.0   # tilt slew — gentler: the camera rides the tilt
                                      # joint, so slower tilt = less USB-cable flex/shock
+SLEW_BRAKE_MULT = 3.0   # braking (command magnitude decreasing) may slew this much
+                        # faster than attack — decelerating from cruise 20 took 0.8s
+                        # at 1x, all of it overshoot. NOT a measured value: sweep
+                        # 2/3/4 on hardware with CONTROL_DEBUG on.
+
+# ── Control debug ──
+CONTROL_DEBUG = False   # True: print per-frame err/pid/ema/slew/cmd for both axes
+                        # (compare raw PID vs post-slew at the overshoot moment)
 
 # ── Serial ──
 PORT          = "COM3"

@@ -11,8 +11,9 @@ import numpy as np
 import serial
 
 from config import *
-from core import CameraStream, YOLODetector, PID, build_command, send_stop, clamp
+from core import CameraStream, YOLODetector, PID, build_command, send_stop
 from core.detector import select_face
+from core.pid import asym_ema, slew_step
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -167,6 +168,7 @@ def main():
     smooth_cx     = None
     smooth_cy     = None
     no_body_count = 0
+    last_seq      = -1
     smooth_pan    = 0.0
     smooth_tilt   = 0.0
     slew_pan      = 0.0
@@ -185,10 +187,17 @@ def main():
     print("[INFO] Running — press Q to quit")
 
     while True:
-        grabbed, frame = cam.read()
-        if not grabbed or frame is None:
-            time.sleep(0.01)
+        grabbed, frame, seq = cam.read_seq()
+        # Gate on NEW frames — re-processing the latest frame at CPU speed runs
+        # the control loop at thousands of Hz: the PID derivative collapses
+        # (error unchanged between duplicates) and the per-frame EMAs decay far
+        # faster than their constants suggest.
+        if not grabbed or frame is None or seq == last_seq:
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+            time.sleep(0.002)
             continue
+        last_seq = seq
 
         now       = time.monotonic()
         dt        = max(now - last_time, 1e-6)
@@ -210,6 +219,8 @@ def main():
 
         pan_raw  = 0.0
         tilt_raw = 0.0
+        pan_pid  = 0.0
+        tilt_pid = 0.0
         status   = "NO BODY"
 
         target_box = select_face(faces, smooth_cx, smooth_cy)
@@ -281,16 +292,27 @@ def main():
                 pid_pan.reset()
                 pid_tilt.reset()
 
-        smooth_pan  = CMD_SMOOTH * smooth_pan  + (1.0 - CMD_SMOOTH) * pan_raw
-        smooth_tilt = CMD_SMOOTH * smooth_tilt + (1.0 - CMD_SMOOTH) * tilt_raw
+        smooth_pan  = asym_ema(smooth_pan,  pan_raw,  CMD_SMOOTH, CMD_SMOOTH_DECAY)
+        smooth_tilt = asym_ema(smooth_tilt, tilt_raw, CMD_SMOOTH, CMD_SMOOTH_DECAY)
 
-        max_step_pan  = MAX_CMD_CHANGE_PER_SEC_PAN  * dt
-        max_step_tilt = MAX_CMD_CHANGE_PER_SEC_TILT * dt
-        slew_pan  += clamp(smooth_pan  - slew_pan,  -max_step_pan,  max_step_pan)
-        slew_tilt += clamp(smooth_tilt - slew_tilt, -max_step_tilt, max_step_tilt)
+        slew_pan  = slew_step(slew_pan,  smooth_pan,
+                              MAX_CMD_CHANGE_PER_SEC_PAN  * dt, SLEW_BRAKE_MULT)
+        slew_tilt = slew_step(slew_tilt, smooth_tilt,
+                              MAX_CMD_CHANGE_PER_SEC_TILT * dt, SLEW_BRAKE_MULT)
 
-        pan_cmd  = STOP_PAN  + int(round(slew_pan))
-        tilt_cmd = STOP_TILT + int(round(slew_tilt))
+        # Deadband the FINAL offset too: the EMA/slew decay tail otherwise
+        # dribbles 1-3 unit commands the CR servos act on (creep past center).
+        pan_out  = apply_output_deadband(slew_pan,  OUTPUT_DEADBAND)
+        tilt_out = apply_output_deadband(slew_tilt, OUTPUT_DEADBAND)
+        pan_cmd  = STOP_PAN  + int(round(pan_out))
+        tilt_cmd = STOP_TILT + int(round(tilt_out))
+
+        if CONTROL_DEBUG:
+            print(f"[CTRL] dt={dt*1000:4.0f}ms "
+                  f"pan(err={error_x:+6.1f} pid={pan_pid:+6.2f} ema={smooth_pan:+6.2f} "
+                  f"slew={slew_pan:+6.2f} cmd={pan_cmd:3d}) "
+                  f"tilt(err={error_y:+6.1f} pid={tilt_pid:+6.2f} ema={smooth_tilt:+6.2f} "
+                  f"slew={slew_tilt:+6.2f} cmd={tilt_cmd:3d})")
 
         draw_hud(frame, status, pan_cmd, tilt_cmd,
                  smooth_cx, smooth_cy,

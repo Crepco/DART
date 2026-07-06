@@ -19,8 +19,9 @@ import time
 import cv2
 
 from config import *  # noqa: F401,F403  (camera/servo/PID/serial/colour constants)
-from core import CameraStream, YOLODetector, PID, clamp
+from core import CameraStream, YOLODetector, PID
 from core.detector import select_face
+from core.pid import asym_ema, slew_step
 from main import update_fire_state, apply_output_deadband, AUTH_COLS
 
 from .serial_link import SerialLink
@@ -230,6 +231,7 @@ class DartRunner:
         slew_pan = slew_tilt = 0.0
         last_send = 0.0
         last_time = time.monotonic()
+        last_seq = -1
         error_x = error_y = 0.0
         last_sent_pan, last_sent_tilt = STOP_PAN, STOP_TILT
         last_sent_fire = False
@@ -244,10 +246,16 @@ class DartRunner:
         while not self._stopped:
             with self._cam_lock:
                 cam = self.cam
-            grabbed, frame = cam.read() if cam is not None else (False, None)
-            if not grabbed or frame is None:
-                time.sleep(0.01)
+            grabbed, frame, seq = (cam.read_seq() if cam is not None
+                                   else (False, None, -1))
+            # Gate on NEW frames: spinning on the latest frame at CPU speed made
+            # the loop run at thousands of Hz — the PID derivative collapses
+            # (error unchanged between duplicates) and the per-frame EMAs decay
+            # 20x faster than their constants suggest.
+            if not grabbed or frame is None or seq == last_seq:
+                time.sleep(0.002)
                 continue
+            last_seq = seq
 
             with self._lock:                  # clean copy before the HUD draws on it
                 self._frame_raw = frame.copy()
@@ -255,7 +263,11 @@ class DartRunner:
             now = time.monotonic()
             dt  = max(now - last_time, 1e-6)
             last_time = now
-            fps = 0.9 * fps + 0.1 * (1.0 / dt)
+            # Seed the EMA on the first sane interval — the very first frame sees
+            # dt~0 (last_time was set moments earlier) and 1/dt would poison the
+            # average with a ~1e6 spike that takes minutes to decay.
+            if dt > 1e-3:
+                fps = (1.0 / dt) if fps == 0.0 else (0.9 * fps + 0.1 * (1.0 / dt))
 
             h_f, w_f = frame.shape[:2]
             cx_frame, cy_frame = w_f // 2, h_f // 2
@@ -272,6 +284,7 @@ class DartRunner:
                 return update_fire_state(ex, ey, locked_face_auth, fire_in, lc_in)
 
             pan_raw = tilt_raw = 0.0
+            pan_pid = tilt_pid = 0.0
             status  = "NO BODY"
             target_box = select_face(faces, smooth_cx, smooth_cy)
 
@@ -320,14 +333,25 @@ class DartRunner:
                     pid_pan.reset()
                     pid_tilt.reset()
 
-            smooth_pan  = CMD_SMOOTH * smooth_pan  + (1.0 - CMD_SMOOTH) * pan_raw
-            smooth_tilt = CMD_SMOOTH * smooth_tilt + (1.0 - CMD_SMOOTH) * tilt_raw
-            max_step_pan  = MAX_CMD_CHANGE_PER_SEC_PAN  * dt
-            max_step_tilt = MAX_CMD_CHANGE_PER_SEC_TILT * dt
-            slew_pan  += clamp(smooth_pan  - slew_pan,  -max_step_pan,  max_step_pan)
-            slew_tilt += clamp(smooth_tilt - slew_tilt, -max_step_tilt, max_step_tilt)
-            pan_cmd  = STOP_PAN  + int(round(slew_pan))
-            tilt_cmd = STOP_TILT + int(round(slew_tilt))
+            smooth_pan  = asym_ema(smooth_pan,  pan_raw,  CMD_SMOOTH, CMD_SMOOTH_DECAY)
+            smooth_tilt = asym_ema(smooth_tilt, tilt_raw, CMD_SMOOTH, CMD_SMOOTH_DECAY)
+            slew_pan  = slew_step(slew_pan,  smooth_pan,
+                                  MAX_CMD_CHANGE_PER_SEC_PAN  * dt, SLEW_BRAKE_MULT)
+            slew_tilt = slew_step(slew_tilt, smooth_tilt,
+                                  MAX_CMD_CHANGE_PER_SEC_TILT * dt, SLEW_BRAKE_MULT)
+            # Deadband the FINAL offset too: the EMA/slew decay tail otherwise
+            # dribbles 1-3 unit commands the CR servos act on (creep past center).
+            pan_out  = apply_output_deadband(slew_pan,  OUTPUT_DEADBAND)
+            tilt_out = apply_output_deadband(slew_tilt, OUTPUT_DEADBAND)
+            pan_cmd  = STOP_PAN  + int(round(pan_out))
+            tilt_cmd = STOP_TILT + int(round(tilt_out))
+
+            if CONTROL_DEBUG:
+                print(f"[CTRL] dt={dt*1000:4.0f}ms "
+                      f"pan(err={error_x:+6.1f} pid={pan_pid:+6.2f} ema={smooth_pan:+6.2f} "
+                      f"slew={slew_pan:+6.2f} cmd={pan_cmd:3d}) "
+                      f"tilt(err={error_y:+6.1f} pid={tilt_pid:+6.2f} ema={smooth_tilt:+6.2f} "
+                      f"slew={slew_tilt:+6.2f} cmd={tilt_cmd:3d})")
 
             fire_label, fire_col = _fire_label_dart(fire, locked, locked_face_auth)
 
