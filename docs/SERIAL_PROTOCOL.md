@@ -1,7 +1,8 @@
 # DART — Serial Protocol
 
-Wire format between the Python host (`scripts/yolo.py`) and the Arduino controller
-(`arduino_servo_controller/arduino_servo_controller.ino`).
+Wire format between the Python host (`scripts/web/serial_link.py` for the web UI,
+`scripts/core/serial_handler.py` for the desktop window) and the Arduino controller
+(`arduino/arduino_servo_controller/arduino_servo_controller.ino`).
 
 ## Link
 
@@ -72,4 +73,5 @@ trigger untouched. New host code (the web UI) always sends `F`.
 
 1. Arduino resets on serial open, initializes servos to neutral / trigger rest.
 2. Arduino prints `READY`.
-3. Host waits for `READY` (up to ~2 s), then sends an initial `P090T090F0` stop.
+3. Host waits for `READY` (up to 5 s), then sends an initial `P090T090F0` stop. If no
+   `READY` arrives, the host closes the port and runs preview-only (no servo output).

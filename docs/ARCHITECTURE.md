@@ -1,112 +1,155 @@
-# DART — Architecture & Tracking Notes
+# DART — Architecture & Tuning Notes
 
-System and algorithm notes for the YOLO tracking pipeline (`scripts/yolo.py`) and the
-Arduino servo controller (`arduino_servo_controller/arduino_servo_controller.ino`). The
-wire format is documented separately in [DOCS_SERIAL_PROTOCOL.md](DOCS_SERIAL_PROTOCOL.md).
+System and algorithm notes for the tracking/control pipeline. Entry points:
+`scripts/main.py` (desktop OpenCV window) and `scripts/web/runner.py` (headless runner
+behind the Flask UI in `scripts/web/app.py`). The wire format is documented in
+[SERIAL_PROTOCOL.md](SERIAL_PROTOCOL.md); the vision/auth pipeline in more detail in
+[FACE_TRACKER.md](FACE_TRACKER.md).
 
 ## Overview
 
-A laptop webcam feeds two YOLOv8 models. The turret is driven toward the tracked **face**
-centroid by a PID controller whose output is smoothed and rate-limited before being sent
-over serial to the Arduino, which drives two continuous-rotation MG996R servos (pan, tilt)
-and one positional MG90 trigger servo.
+A laptop webcam feeds two YOLOv8 models plus an InsightFace classifier. The turret is
+driven toward the tracked **face** centroid by a PID controller whose output is smoothed
+and rate-limited before going over serial to the Arduino (two continuous-rotation MG996R
+servos for pan/tilt, one positional MG90 trigger).
 
 ```
-Camera ─► YOLO (person track + face detect) ─► face centroid
-       ─► error vs frame centre ─► PID ─► EMA ─► slew limiter ─► serial ─► Arduino ─► servos
-       ─► lock-on test (centre error) ─► fire flag ─► trigger servo
+Camera ─► YOLO person track (ByteTrack) ─► per-track auth verdict (InsightFace)
+       ─► target = confirmed-UNAUTHORIZED person, face centroid = aim point
+       ─► error vs frame centre ─► PID ─► asym EMA ─► brake slew ─► serial ─► servos
+       ─► lock-on test (centre error) + auth gate ─► fire flag ─► trigger servo
 ```
 
 ## Models
 
-| Model            | File                     | Role                                            |
-|------------------|--------------------------|-------------------------------------------------|
-| `yolov8n.pt`     | `models/yolov8n.pt`      | Person tracking (ByteTrack), HUD person boxes.  |
-| `yolov8n-face.pt`| `models/yolov8n-face.pt` | Face detection — the turret tracks the face.    |
+| Model             | File                      | Role                                           |
+|-------------------|---------------------------|------------------------------------------------|
+| `yolov8n.pt`      | `models/yolov8n.pt`       | Person detection + ByteTrack identity.         |
+| `yolov8n-face.pt` | `models/yolov8n-face.pt`  | Face detection — the turret aims at the face.  |
+| `buffalo_sc`      | auto-downloaded           | InsightFace embeddings for authorization.      |
 
-`yolov8n.pt` is auto-downloaded by ultralytics on first run. The face model comes from
+`yolov8n.pt` is auto-downloaded by ultralytics. The face model comes from
 <https://github.com/akanametov/yolov8-face/releases>; if missing, face boxes are skipped.
+Tracker parameters live in `scripts/bytetrack_dart.yaml` (see below).
 
 ## Threading model
 
-Three threads keep the control loop responsive and decoupled from model latency:
+Four threads keep the control loop responsive and decoupled from model latency:
 
-- **`CameraStream`** — continuously grabs the latest frame (1-frame buffer) so the main
-  loop never blocks on capture.
-- **`YOLODetector`** — runs person tracking + face detection in the background; `submit()`
-  hands off the newest frame non-blocking, `get_result()` returns the most recent result.
-- **Main loop** — reads the latest frame + detection, runs PID/smoothing, draws the HUD,
-  and sends serial at a fixed rate (decoupled from YOLO inference frequency).
+- **`CameraStream`** — grabs the latest frame continuously (latest-frame-wins) and
+  self-heals on read failures. Exposes `read_seq()` so consumers can gate on NEW frames.
+- **`YOLODetector`** — person tracking + face detection in the background; `submit()`
+  hands off the newest frame, `get_result()` returns the latest result.
+- **`_ClassifierWorker`** — runs InsightFace classification off the detection thread
+  (single-slot mailbox, latest job wins) so a slow embed never blocks tracking.
+- **Main / runner loop** — gated on new camera frames (`seq` check): re-processing the
+  same frame at CPU speed used to run the loop at kHz, collapsing the PID derivative and
+  making the per-frame EMAs decay far faster than their constants suggest.
 
-## Tracking strategy
+## Tracking & identity
 
-- Person tracking uses `.track()` with ByteTrack and locks the first seen ID, re-acquiring
-  the next available person if it disappears (used for HUD context).
-- The **turret is driven by the face centroid**, not the person body.
-- **Continuity selection** (`select_face`): the active face is the one nearest the previous
-  smoothed centroid (score = area − 0.4·distance). With no anchor yet, the largest face is
-  chosen. This stops the turret hopping between faces frame-to-frame.
-- **Ghost-anchor reset**: after the target is lost for >15 frames, the smoothed centroid
-  anchor is reset to `None` (along with the PID/slew/EMA state). The next face to appear —
-  the same person returning or a new person entering from the opposite side — instantly
-  becomes the new anchor instead of being dragged toward stale coordinates.
+- `model.track()` is called with `conf=TRACK_CONF` (0.1), **not** `PERSON_CONF` (0.45):
+  ultralytics filters detections at the predictor's `conf` *before* the tracker sees
+  them, and ByteTrack's second-stage association — its mechanism for holding a track
+  through blur/pose/lighting dips — needs those 0.1–0.45 detections. Downstream
+  (HUD/targeting/classification) only sees boxes ≥ `PERSON_CONF`, so low-conf detections
+  maintain identity and nothing else.
+- `scripts/bytetrack_dart.yaml`: `track_high_thresh 0.45`, `track_low_thresh 0.1`,
+  `new_track_thresh 0.5` (low-conf detections may *maintain* tracks, never *spawn* them),
+  `track_buffer 60` (~4 s at 15 fps, longer as fps drops), `match_thresh 0.8`.
+  Escalation order if hardware still shows fresh IDs after occlusions:
+  `track_buffer` → 90, `match_thresh` → 0.7, then spatial re-ID inheritance.
+- **Verdict grace**: `TrackManager` keeps a track's auth verdict for
+  `TRACK_STATE_GRACE_S` (8 s) after the tracker stops reporting it — time-based, so the
+  budget doesn't shrink with fps. ByteTrack only outputs *active* tracks, so without the
+  grace a single missed frame wiped the verdict even when the same ID re-attached.
+- `TRACK_DEBUG = True` logs track-ID set changes (`+id(conf)` / `-id`) for diagnosing
+  identity drops.
+
+## Authorization pipeline
+
+- InsightFace `buffalo_sc` (det 256×256 + ArcFace embedding) classifies the target's
+  person-crop against `scripts/embeddings/authorized.pkl`
+  (cosine similarity ≥ `SIMILARITY_THRESHOLD` 0.4 → AUTHORIZED).
+- Unconfirmed tracks classify every frame (fast acquire, initial debounce 2 agreeing
+  reads); confirmed tracks re-check every 10 frames and need 5 agreeing reads to flip —
+  except **UNAUTHORIZED is frozen** for the track's lifetime so blur can't churn a known
+  target back to UNKNOWN and reset the fire dwell.
+- Enrollment (web Authorize Person or the CLI tools) hot-reloads the classifier db and
+  resets confirmed-UNAUTHORIZED tracks to UNKNOWN so a just-enrolled person re-classifies
+  within ~2 verdicts; UNKNOWN is never a target, so the turret holds during the re-check.
+- The runner exposes `auth_provider` + `auth_ms` in `/state`; `CPU (degraded)` means a
+  CUDA GPU is present but the CPU `onnxruntime` build is shadowing `onnxruntime-gpu`.
+
+## Target selection
+
+Stateless per frame: only **confirmed-UNAUTHORIZED** persons are valid targets — none
+means hold (the turret waits rather than chasing UNKNOWN/AUTHORIZED tracks). With several
+candidates it locks the largest bbox (nearest the camera), which is deterministic and so
+doesn't oscillate. The aim point is the face nearest the previous smoothed centroid
+(`select_face`: score = area − 0.4·distance; largest face when no anchor yet), preventing
+frame-to-frame face hopping.
 
 ## Control law & anti-jitter
 
-The MG996R servos have ~50–100 ms mechanical lag, so several filters stack to keep motion
-smooth and silent at rest:
+The MG996R servos are continuous-rotation: the command is a *velocity*, which makes the
+plant an integrator — lag anywhere in the command path turns directly into overshoot.
+Stages, in order:
 
-1. **Centroid EMA** (`SMOOTH = 0.90`) — smooths the measured face position so detection
-   wobble doesn't reach the controller.
-2. **Input deadband** (`INPUT_DEADBAND = 30 px`) — zeroes small centre errors *before* the
-   PID, so a still target produces no command. Kept below `LOCK_ON_RADIUS` so the turret
-   still settles inside the fire zone. This is the primary "stops moving when the person
-   isn't moving" control — raise it (to 40–50) if it still hunts.
-3. **PID** — per-axis, with output clamped to `MAX_SPEED`.
-   - **KP** (~0.04): proportional anchor. Too high → overshoot against servo lag.
-   - **KD** (0.09–0.10): anti-overshoot brake. Raise in steps (→ 0.12 → 0.15) if the turret
-     overshoots when the target stops; lower if it twitches.
-   - **Filtered derivative** (`D_SMOOTH = 0.70`): the raw derivative `(error−prev)/dt` hugely
-     amplifies detection noise at low FPS (a few px of wobble → large command spikes on a
-     velocity-commanded servo). The D term is low-pass filtered (EMA, new-sample weight 0.3)
-     so noise no longer drives the motors. This is the key fix for idle/near-still jitter.
-   - **KI** (0.001): keep very low. A target just out of reach winds up the integral and
-     snaps on return; also hard-clamped by `INTEGRAL_CLAMP`.
-4. **Output deadband** (`OUTPUT_DEADBAND = 4`) — suppresses buzz at centre. Raise to 5–6
-   if the servos chatter when locked.
-5. **Command EMA** (`CMD_SMOOTH = 0.85`) — smooths the PID output. New-sample weight is
-   `1 − CMD_SMOOTH ≈ 0.15`, matching the standard form
-   `out_new = α·target + (1−α)·out_old` with α ≈ 0.15.
-6. **Slew-rate limiter** (`MAX_CMD_CHANGE_PER_SEC_PAN = 25.0` / `MAX_CMD_CHANGE_PER_SEC_TILT = 15.0`,
-   dt-scaled) — caps the per-axis rate of command change regardless of camera FPS. Tilt is
-   slower because the camera rides the tilt joint, so gentler tilt reduces USB-cable flex.
-   The limiter is allowed to ramp
-   down naturally (no instant brake-to-zero) to avoid dead-band chatter on oscillation;
-   state is only fully zeroed when the target is completely lost.
+1. **Centroid EMA** (`SMOOTH = 0.70`) — smooths the measured face position.
+   τ ≈ 1/(1−SMOOTH) frames; 0.90 meant ~10 frames (~0.7 s) of measurement lag and was the
+   main overshoot driver. Tradeoff: less jitter filtering — if new at-rest oscillation
+   appears, step to 0.80 before touching gains.
+2. **Input deadband** (`INPUT_DEADBAND = 30 px`) — zeroes small centre errors before the
+   PID so a still target produces no command. Kept below `LOCK_ON_RADIUS` (40) so the
+   turret settles inside the fire zone.
+3. **PID** — per-axis, output clamped to `MAX_SPEED` (25).
+   - `PAN_KP 0.075 / TILT_KP 0.04`; `PAN_KD 0.15 / TILT_KD 0.09` (anti-overshoot brake —
+     raise KD before lowering KP if it still rings).
+   - **Filtered derivative** (`D_SMOOTH = 0.70`): the raw derivative amplifies detection
+     noise into command spikes on a velocity-commanded servo; the D term is low-passed.
+   - **KI = 0 on purpose**: at 0.001 the clamped integral contributed ≤ 0.01 units while
+     remaining a windup liability. Tradeoff: nothing corrects steady-state bias — if a
+     persistent small-angle offset appears, restore a small KI (0.001–0.005) rather than
+     chasing a "bug".
+4. **Asymmetric command EMA** (`asym_ema`, `CMD_SMOOTH 0.85` attack / `CMD_SMOOTH_DECAY
+   0.50` release) — onset stays soft, but braking must not inherit the attack lag: a
+   symmetric 0.85 EMA kept the turret coasting ~0.4 s past centre after the PID said
+   "stop".
+5. **Brake-aware slew limiter** (`slew_step`, 25/s pan, 15/s tilt, dt-scaled) — caps the
+   command rate of change. While the step opposes the current command's sign (driving
+   toward zero) the limit is multiplied by `SLEW_BRAKE_MULT` (3.0 — a starting point, not
+   a measured value; sweep 2/3/4 with `CONTROL_DEBUG` on). On a direction reversal this
+   brakes fast to the zero crossing, then accelerates outward at the normal rate. Tilt is
+   slower because the camera rides the tilt joint (less USB-cable flex).
+6. **Final output deadband** (`OUTPUT_DEADBAND = 4`, applied to the *slewed* offset) —
+   without it the EMA/slew decay tail dribbles 1–3 unit commands that continuous-rotation
+   servos act on (creep past centre). Also applied to the raw PID output.
+
+`CONTROL_DEBUG = True` prints one line per frame per axis:
+`err → pid → ema → slew → cmd` — compare raw PID vs post-slew at the moment of overshoot.
 
 ## Fire / lock-on logic
 
-The MG90 trigger fires when a face is tracked **and** held near frame centre:
+The trigger arms only when **all** hold:
 
-- `lock_err = hypot(error_x, error_y)` measured against the true frame centre (independent
-  of the input deadband).
-- **Engage**: `lock_err ≤ LOCK_ON_RADIUS` (40 px) for `FIRE_DWELL_FRAMES` (3) consecutive
-  frames → `fire = True`.
-- **Release (hysteresis)**: `lock_err > LOCK_RELEASE_RADIUS` (70 px), or target lost →
-  `fire = False`.
+- the locked target's *persisted* verdict is UNAUTHORIZED (auth gate — AUTHORIZED and
+  UNKNOWN targets never arm, and a motion-blur frame can't reset this);
+- `lock_err = hypot(error_x, error_y) ≤ LOCK_ON_RADIUS` (40 px) for `FIRE_DWELL_FRAMES`
+  (3) consecutive frames.
 
-The dwell + hysteresis prevent the trigger servo chattering between rest and fire when the
-error hovers at the boundary. The fire flag is carried into the serial layer and sent
-immediately on any transition (see protocol doc). Authorization gating is intentionally not
-implemented in this version — any centred face fires.
+Release with hysteresis at `LOCK_RELEASE_RADIUS` (70 px) or on target loss. Brief
+detection dropouts are coasted for `FIRE_COAST_FRAMES` (5) so the dwell isn't reset by a
+single blurred frame. The fire flag is sent immediately on any transition (bypasses the
+serial rate gate, explicit flush).
 
 ## Arduino side
 
 The firmware is deliberately dumb: it executes pan/tilt/fire commands as fast as they
-arrive, with hardware bounds checking. All smoothing and lock-on logic live in Python. A
-`TIMEOUT_MS` (500 ms) watchdog stops all servos and forces the trigger to rest if Python
-crashes or disconnects; an internal `fireState` flag is also cleared so a stray packet
-arriving at watchdog recovery cannot re-fire from stale state.
+arrive, with bounds checking. All smoothing and lock-on logic live in Python. A
+`TIMEOUT_MS` (500 ms) watchdog stops all servos and forces the trigger to rest if the
+host goes silent; the internal `fireState` flag is cleared too, so a stray packet at
+watchdog recovery cannot re-fire from stale state.
 
 ## Hardware
 
@@ -121,10 +164,10 @@ arriving at watchdog recovery cannot re-fire from stale state.
 
 ```
 pip install -r requirements.txt          # NVIDIA GPU (CUDA 12.6 torch + onnxruntime-gpu)
-pip install -r requirements-cpu.txt      # CPU-only machine (lean ~200 MB torch build)
+pip install -r requirements-cpu.txt      # CPU-only machine
+python scripts/run_web.py                # web UI (recommended)
 python scripts/main.py [--camera N] [--port PORT]
 ```
 
-Both files install identical versions — only the torch/onnxruntime builds differ. The
-runtime auto-detects CUDA (`DEVICE` in `scripts/core/detector.py`) and runs on whatever is
-available, so no code changes are needed to switch between the two.
+Both requirement files install identical versions — only the torch/onnxruntime builds
+differ; the runtime auto-detects CUDA and no code changes are needed to switch.

@@ -1,3 +1,7 @@
+Standalone wiring test — sweeps servos on pins 8–11 end to end forever. Upload it to
+verify power/wiring before flashing the real controller; it is not part of DART.
+
+```cpp
 #include <Servo.h>
 
 // Create four servo objects
@@ -29,3 +33,4 @@ void loop() {
   servo11.write(0);
   delay(1000); // Wait 1 second
 }
+```
