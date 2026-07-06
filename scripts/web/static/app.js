@@ -5,26 +5,36 @@
 const $ = (id) => document.getElementById(id);
 const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
 
+const setState = (id, state) => { const el = $(id); if (el) el.dataset.state = state; };
+
 function paint(s) {
   const banner = $("banner");
   if (s.status === "ERROR") {
     banner.textContent = "⚠ " + (s.error || "Runner error");
     banner.classList.remove("hidden"); banner.classList.add("err");
   } else if (s.status === "STOPPED") {
-    banner.textContent = "Runner stopped.";
+    banner.innerHTML = 'Runner stopped. <a href="/">Back to launcher</a>';
     banner.classList.remove("hidden", "err");
   } else if (!s.running || ["STARTING", "LOADING MODELS"].includes(s.status)
              || (s.status === "RUNNING" && s.fps === undefined)) {
-    const t = s.elapsed != null ? ` (${Math.round(s.elapsed)}s)` : "";
-    banner.textContent = "Starting camera + loading models…" + t;
+    const t = s.elapsed != null
+      ? `<div class="banner-sub">${Math.round(s.elapsed)}s</div>` : "";
+    banner.innerHTML = '<span class="spin spin-lg"></span>'
+      + "<div>Starting camera + loading models…</div>" + t;
     banner.classList.remove("hidden", "err");
   } else {
     banner.classList.add("hidden");
   }
 
   set("status", s.status || "—");
+  setState("status", s.status === "TRACKING" ? "good"
+                   : s.status === "ERROR"    ? "err"
+                   : s.status === "NO BODY"  ? "dim" : "");
+
   set("serial", s.serial === "connected" ? "● connected"
               : s.serial === "preview"   ? "○ preview (no R3)" : "—");
+  setState("serial", s.serial === "connected" ? "good" : "dim");
+
   set("fps", s.fps != null ? s.fps.toFixed(1) : "—");
 
   // Face-auth backend + per-verdict latency. "CPU (degraded)" means a CUDA GPU
@@ -34,10 +44,10 @@ function paint(s) {
     if (s.auth_provider) {
       authEl.textContent = s.auth_provider
         + (s.auth_ms != null ? ` · ${s.auth_ms}ms` : "");
-      authEl.classList.toggle("warn", s.auth_provider.includes("degraded"));
+      authEl.dataset.state = s.auth_provider.includes("degraded") ? "warn" : "";
     } else {
       authEl.textContent = "—";
-      authEl.classList.remove("warn");
+      authEl.dataset.state = "";
     }
   }
 }

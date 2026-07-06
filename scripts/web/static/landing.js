@@ -72,6 +72,8 @@ loadPorts();
 document.querySelectorAll("form.card").forEach((form) => {
   form.addEventListener("submit", () => {
     const btn = form.querySelector('button[type="submit"]');
-    if (btn) { btn.disabled = true; btn.textContent = "Launching…"; }
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Launching…'; }
+    document.querySelectorAll(".camera-pick select, .camera-pick button")
+      .forEach((el) => { el.disabled = true; });
   });
 });
