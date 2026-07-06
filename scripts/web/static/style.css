@@ -138,3 +138,27 @@ code { font-family: var(--mono); color: var(--cyan); background: #0d1512;
   box-shadow: 0 0 24px -4px var(--red); animation: pulse .5s infinite alternate; }
 .fire-state[data-fire="focused"] { color: var(--green); border-color: #1d4a35; background: #0c1611; }
 @keyframes pulse { from { filter: brightness(.92); } to { filter: brightness(1.18); } }
+
+/* ───────────────────── authorize person ───────────────────── */
+.auth-block { margin-top: 14px; border-top: 1px dashed #182320; padding-top: 14px;
+  display: flex; flex-direction: column; gap: 9px; }
+.auth-title { margin: 0 0 2px; font-family: var(--mono); font-size: 12px;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.auth-input { background: #0d1512; color: var(--ink); border: 1px solid var(--line);
+  border-radius: 7px; padding: 9px 11px; font-family: var(--mono); font-size: 13px; }
+.auth-input:focus { outline: none; border-color: var(--cyan); }
+.auth-btn { background: linear-gradient(180deg, #4ee39a, var(--green)); color: #06120c;
+  border: 0; border-radius: 8px; padding: 11px 13px; font-family: var(--mono);
+  font-size: 13px; font-weight: 600; letter-spacing: .04em; cursor: pointer;
+  transition: filter .15s ease; }
+.auth-btn:hover { filter: brightness(1.08); }
+.auth-btn:disabled { filter: grayscale(.6) brightness(.7); cursor: default; }
+.auth-upload { font-family: var(--mono); font-size: 12px; color: var(--cyan);
+  text-align: center; cursor: pointer; }
+.auth-upload:hover { text-decoration: underline; }
+.auth-msg { font-family: var(--mono); font-size: 12px; color: var(--muted);
+  min-height: 16px; line-height: 1.5; }
+.auth-msg.err { color: var(--red); }
+.auth-msg.ok { color: var(--green); }
+.auth-list { font-family: var(--mono); font-size: 12px; color: var(--muted);
+  line-height: 1.5; }

@@ -2,7 +2,9 @@
 
 import os
 import pickle
+import threading
 
+import cv2
 import numpy as np
 
 # onnxruntime-gpu's CUDA provider needs the CUDA 12 / cuDNN 9 runtime DLLs
@@ -22,7 +24,8 @@ if hasattr(os, "add_dll_directory"):
 
 from insightface.app import FaceAnalysis
 
-from config import SIMILARITY_THRESHOLD, EMBEDDINGS_PATH
+from config import (SIMILARITY_THRESHOLD, EMBEDDINGS_PATH,
+                    ENROLL_MIN_FACE, ENROLL_MIN_DET_SCORE, ENROLL_MIN_SHARPNESS)
 
 
 class FaceClassifier:
@@ -38,17 +41,28 @@ class FaceClassifier:
         self.app.prepare(ctx_id=0, det_size=(256, 256))
         self._warn_if_cpu_fallback()
 
+        # classify() runs on the detector's worker thread; extract_embedding()
+        # runs on Flask request threads — one session, one user at a time.
+        self._session_lock = threading.Lock()
+
         self.db = {}
+        self.reload_db()
+
+    def reload_db(self):
+        """(Re)load the authorized-embeddings pkl. Called at init and after the web
+        enrollment flow writes a new identity."""
+        db = {}
         if os.path.exists(EMBEDDINGS_PATH):
             try:
                 with open(EMBEDDINGS_PATH, "rb") as f:
-                    self.db = pickle.load(f)
+                    db = pickle.load(f)
             except Exception as e:
                 print(f"[WARN] Could not load embeddings ({EMBEDDINGS_PATH}): {e}")
-                self.db = {}
+                db = {}
         else:
             print(f"[WARN] Embeddings file not found ({EMBEDDINGS_PATH}).")
 
+        self.db = db
         if not self.db:
             print("[WARN] No authorized embeddings loaded — run enroll.py. "
                   "All detected faces will read UNAUTHORIZED.")
@@ -83,7 +97,8 @@ class FaceClassifier:
         if crop is None or crop.size == 0:
             return "UNKNOWN"
 
-        faces = self.app.get(crop)
+        with self._session_lock:
+            faces = self.app.get(crop)
         if not faces:
             return "UNKNOWN"
 
@@ -97,3 +112,35 @@ class FaceClassifier:
                 best = score
 
         return "AUTHORIZED" if best >= SIMILARITY_THRESHOLD else "UNAUTHORIZED"
+
+    def extract_embedding(self, frame):
+        """Quality-gated embedding of the largest face in `frame`, for enrollment.
+
+        Returns (embedding, "ok") or (None, reason). The gate rejects small, low
+        confidence, or blurred faces — a bad capture saved to the pkl would degrade
+        recognition for that identity permanently.
+        """
+        if frame is None or frame.size == 0:
+            return None, "empty frame"
+
+        with self._session_lock:
+            faces = self.app.get(frame)
+        if not faces:
+            return None, "no face found"
+
+        face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+        x1, y1, x2, y2 = (int(v) for v in face.bbox)
+        if min(x2 - x1, y2 - y1) < ENROLL_MIN_FACE:
+            return None, "face too small — move closer"
+        if face.det_score < ENROLL_MIN_DET_SCORE:
+            return None, "face unclear — face the camera"
+
+        h, w = frame.shape[:2]
+        crop = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+        if crop.size == 0:
+            return None, "face out of frame"
+        sharpness = cv2.Laplacian(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
+        if sharpness < ENROLL_MIN_SHARPNESS:
+            return None, "too blurry — hold still"
+
+        return face.normed_embedding, "ok"

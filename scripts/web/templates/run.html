@@ -25,17 +25,16 @@
       <div class="row"><span class="k">Status</span><span class="v" id="status">—</span></div>
       <div class="row"><span class="k">Serial</span><span class="v" id="serial">—</span></div>
       <div class="row"><span class="k">FPS</span><span class="v" id="fps">—</span></div>
-      <div class="row"><span class="k">Persons</span><span class="v" id="persons">—</span></div>
-      <div class="row"><span class="k">Target ID</span><span class="v" id="trackid">—</span></div>
-      <div class="row"><span class="k">Pan / Tilt</span><span class="v" id="pantilt">—</span></div>
-      <div class="row cam-row">
-        <span class="k">Camera</span>
-        <span class="v"><select id="camSelect" class="cam-select"><option>—</option></select></span>
-      </div>
-      <div class="cam-msg" id="camMsg"></div>
 
-      <div class="fire-state" id="fireState" data-fire="0">
-        <span id="fireLabel">SAFE</span>
+      <div class="auth-block">
+        <h3 class="auth-title">Authorize Person</h3>
+        <input id="authName" class="auth-input" type="text" placeholder="name"
+               autocomplete="off" spellcheck="false">
+        <button id="authCapture" class="auth-btn" type="button">◉ Capture from feed</button>
+        <label class="auth-upload" for="authFiles">or upload photos…</label>
+        <input id="authFiles" type="file" accept="image/jpeg,image/png" multiple hidden>
+        <div class="auth-msg" id="authMsg"></div>
+        <div class="auth-list" id="authList"></div>
       </div>
     </aside>
   </main>

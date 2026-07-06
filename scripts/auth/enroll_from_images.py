@@ -10,13 +10,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import os
 import argparse
-import pickle
 
 import cv2
-import numpy as np
 from insightface.app import FaceAnalysis
 
-from config import CAM_INDEX, EMBEDDINGS_PATH
+from auth.enroll import save_identity
+from config import EMBEDDINGS_PATH
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png")
 
@@ -59,26 +58,10 @@ def enroll_from_images(folder: str, name: str):
         print("[WARN] No embeddings collected — nothing saved.")
         return
 
-    mean = np.mean(embeddings, axis=0)
-    mean = mean / np.linalg.norm(mean)
-
-    db = {}
-    if os.path.exists(EMBEDDINGS_PATH):
-        try:
-            with open(EMBEDDINGS_PATH, "rb") as f:
-                db = pickle.load(f)
-        except Exception as e:
-            print(f"[WARN] Could not read existing embeddings: {e}")
-            db = {}
-
-    db[name] = mean
-
-    os.makedirs(os.path.dirname(EMBEDDINGS_PATH), exist_ok=True)
-    with open(EMBEDDINGS_PATH, "wb") as f:
-        pickle.dump(db, f)
+    names = save_identity(name, embeddings)
 
     print(f"[INFO] Enrolled '{name}' from {len(embeddings)}/{len(images)} images -> {EMBEDDINGS_PATH}")
-    print(f"[INFO] Database now holds {len(db)} identities: {', '.join(db.keys())}")
+    print(f"[INFO] Database now holds {len(names)} identities: {', '.join(names)}")
 
 
 if __name__ == "__main__":

@@ -41,6 +41,30 @@ def _get_runner_cls():
     return DartRunner
 
 
+def _runner_ref():
+    with _runner_lock:
+        return _runner
+
+
+# One-off classifier for enrolling from uploads while DART is stopped; created
+# lazily (InsightFace load) and cached for the life of the process.
+_fallback_classifier = None
+_fallback_clf_lock = threading.Lock()
+
+
+def _get_classifier(r):
+    """The live runner's classifier when DART is running, else the cached fallback."""
+    if r is not None and r.classifier is not None:
+        return r.classifier
+    global _fallback_classifier
+    with _fallback_clf_lock:
+        if _fallback_classifier is None:
+            from auth.classifier import FaceClassifier
+            print("[INFO] Loading standalone classifier for enrollment…")
+            _fallback_classifier = FaceClassifier()
+        return _fallback_classifier
+
+
 def _probe_cameras(skip=None):
     """Working camera indices (see core.camera.probe_cameras). `skip` is the index a
     running DART already holds — reported as available without re-opening it. The
@@ -148,6 +172,142 @@ def stop():
     if r is not None:
         r.stop(reason="/stop route")
     return ("", 204)
+
+
+# ── Authorize Person ─────────────────────────────────────────────────────────
+# SECURITY: these endpoints ARE the turret's access control and carry no auth of
+# their own. The server binds 127.0.0.1 by default and that is the operating
+# assumption — on 0.0.0.0, anyone who can reach the port can authorize themselves.
+
+
+def _finish_enrollment(clf, name, embeddings):
+    """Persist + activate a new identity: save to the pkl, hot-reload the classifier
+    db, and let confirmed-UNAUTHORIZED tracks re-classify (their verdict is frozen
+    per track, so without the reset a just-enrolled person stays targeted)."""
+    from auth.enroll import save_identity
+    names = save_identity(name, embeddings, overwrite=True)
+    clf.reload_db()
+    r = _runner_ref()
+    if r is not None and r.detector is not None:
+        n = r.detector.reset_unauthorized_tracks()
+        if n:
+            print(f"[INFO] Enrollment: {n} UNAUTHORIZED track(s) reset for re-check.")
+    return names
+
+
+def _reject_reasons(reasons):
+    """'no face found x3, too blurry x2' — most common first."""
+    counts = {}
+    for why in reasons:
+        counts[why] = counts.get(why, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: -kv[1])
+    return ", ".join(f"{why} x{n}" for why, n in ordered)
+
+
+@app.route("/authorized")
+def authorized():
+    """Enrolled identity names. Reads the pkl directly so listing never has to load
+    InsightFace."""
+    import os
+    import pickle
+    from config import EMBEDDINGS_PATH
+    names = []
+    if os.path.exists(EMBEDDINGS_PATH):
+        try:
+            with open(EMBEDDINGS_PATH, "rb") as f:
+                names = sorted(pickle.load(f))
+        except Exception:
+            pass
+    return jsonify({"identities": names})
+
+
+@app.route("/authorize", methods=["POST"])
+def authorize():
+    """Enroll from the live feed: grab frames over a short window, keep the
+    quality-gated ones, and save only if enough survived."""
+    from config import (ENROLL_FRAMES, ENROLL_FRAME_INTERVAL, ENROLL_MIN_ACCEPTED)
+
+    name = (request.form.get("name") or "").strip()
+    overwrite = request.form.get("overwrite") == "1"
+    if not name:
+        return jsonify({"ok": False, "error": "missing name"}), 400
+
+    r = _runner_ref()
+    if r is None or not r.is_alive():
+        return jsonify({"ok": False, "error": "DART is not running"}), 409
+    if r.get_raw_frame() is None:
+        return jsonify({"ok": False, "error": "DART is still starting"}), 409
+
+    clf = _get_classifier(r)
+    if not overwrite and name in clf.db:
+        return jsonify({"ok": False, "error": "exists", "name": name}), 409
+
+    embeddings, reasons = [], []
+    for _ in range(ENROLL_FRAMES):
+        frame = r.get_raw_frame()
+        if frame is None:
+            reasons.append("no frame")
+        else:
+            emb, why = clf.extract_embedding(frame)
+            if emb is not None:
+                embeddings.append(emb)
+            else:
+                reasons.append(why)
+        time.sleep(ENROLL_FRAME_INTERVAL)
+
+    if len(embeddings) < ENROLL_MIN_ACCEPTED:
+        return jsonify({
+            "ok": False, "accepted": len(embeddings), "captured": ENROLL_FRAMES,
+            "error": (f"only {len(embeddings)}/{ENROLL_FRAMES} usable frames "
+                      f"({_reject_reasons(reasons)})"),
+        }), 422
+
+    names = _finish_enrollment(clf, name, embeddings)
+    return jsonify({"ok": True, "name": name, "captured": ENROLL_FRAMES,
+                    "accepted": len(embeddings), "identities": names})
+
+
+@app.route("/authorize/upload", methods=["POST"])
+def authorize_upload():
+    """Enroll from uploaded photos; works with DART stopped (cached classifier)."""
+    import cv2
+    import numpy as np
+
+    name = (request.form.get("name") or "").strip()
+    overwrite = request.form.get("overwrite") == "1"
+    if not name:
+        return jsonify({"ok": False, "error": "missing name"}), 400
+    files = [f for f in request.files.getlist("photos") if f and f.filename]
+    if not files:
+        return jsonify({"ok": False, "error": "no photos uploaded"}), 400
+
+    clf = _get_classifier(_runner_ref())
+    if not overwrite and name in clf.db:
+        return jsonify({"ok": False, "error": "exists", "name": name}), 409
+
+    embeddings, reasons = [], []
+    for f in files:
+        img = cv2.imdecode(np.frombuffer(f.read(), np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            reasons.append("unreadable image")
+            continue
+        emb, why = clf.extract_embedding(img)
+        if emb is not None:
+            embeddings.append(emb)
+        else:
+            reasons.append(why)
+
+    # Photos are deliberate (unlike the live burst), so one usable face is enough —
+    # same bar as the enroll_from_images CLI.
+    if not embeddings:
+        return jsonify({
+            "ok": False, "accepted": 0, "captured": len(files),
+            "error": f"no usable face in uploads ({_reject_reasons(reasons)})",
+        }), 422
+
+    names = _finish_enrollment(clf, name, embeddings)
+    return jsonify({"ok": True, "name": name, "captured": len(files),
+                    "accepted": len(embeddings), "identities": names})
 
 
 @app.route("/state")

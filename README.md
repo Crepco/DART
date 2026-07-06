@@ -76,6 +76,14 @@ targets (face-authorization gate). Servo commands go to the Arduino Uno R3 over 
 | Trigger servo       | `8`    |
 | Status LED          | `13`   |
 
+The run page has an **Authorize Person** panel: enter a name and either capture from the
+live feed (quality-gated burst of frames) or upload photos. Enrollment updates
+`scripts/embeddings/authorized.pkl` and takes effect immediately — no restart.
+
+> **Security note:** the `/authorize` endpoints ARE the turret's access control and have no
+> authentication of their own. The server binds `127.0.0.1` by default and must stay that
+> way — if you expose it on `0.0.0.0`, anyone on the network can authorize themselves.
+
 The web UI supersedes the desktop OpenCV window (`scripts/main.py`), which still works standalone.
 
 ---

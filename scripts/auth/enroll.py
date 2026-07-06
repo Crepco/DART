@@ -20,6 +20,41 @@ from config import CAM_INDEX, CAM_BACKEND, EMBEDDINGS_PATH
 MAX_CAPTURES = 10
 
 
+def save_identity(name, embeddings, overwrite=True, path=EMBEDDINGS_PATH):
+    """Average `embeddings`, L2-normalize, and merge into the pkl db under `name`.
+
+    Shared by the enrollment CLIs and the web "Authorize Person" flow. Returns the
+    sorted list of enrolled names. With overwrite=False, raises ValueError instead
+    of silently replacing an existing identity.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("no name given")
+    if not len(embeddings):
+        raise ValueError("no embeddings to save")
+
+    mean = np.mean(embeddings, axis=0)
+    mean = mean / np.linalg.norm(mean)
+
+    db = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as f:
+                db = pickle.load(f)
+        except Exception as e:
+            print(f"[WARN] Could not read existing embeddings: {e}")
+            db = {}
+
+    if not overwrite and name in db:
+        raise ValueError(f"'{name}' is already enrolled")
+
+    db[name] = mean
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        pickle.dump(db, f)
+    return sorted(db)
+
+
 def enroll():
     app = FaceAnalysis(name="buffalo_sc")
     app.prepare(ctx_id=0, det_size=(640, 640))
@@ -68,26 +103,10 @@ def enroll():
         print("[WARN] No embeddings captured — nothing saved.")
         return
 
-    mean = np.mean(embeddings, axis=0)
-    mean = mean / np.linalg.norm(mean)
-
-    db = {}
-    if os.path.exists(EMBEDDINGS_PATH):
-        try:
-            with open(EMBEDDINGS_PATH, "rb") as f:
-                db = pickle.load(f)
-        except Exception as e:
-            print(f"[WARN] Could not read existing embeddings: {e}")
-            db = {}
-
-    db[name] = mean
-
-    os.makedirs(os.path.dirname(EMBEDDINGS_PATH), exist_ok=True)
-    with open(EMBEDDINGS_PATH, "wb") as f:
-        pickle.dump(db, f)
+    names = save_identity(name, embeddings)
 
     print(f"[INFO] Enrolled '{name}' from {len(embeddings)} photos -> {EMBEDDINGS_PATH}")
-    print(f"[INFO] Database now holds {len(db)} identities: {', '.join(db.keys())}")
+    print(f"[INFO] Database now holds {len(names)} identities: {', '.join(names)}")
 
 
 if __name__ == "__main__":

@@ -94,6 +94,7 @@ class DartRunner:
         self._lock       = threading.Lock()
         self._cam_lock   = threading.Lock()   # guards hot-swapping self.cam
         self._frame_jpeg: bytes | None = None
+        self._frame_raw  = None               # latest un-annotated frame (enrollment)
         self._state: dict = {"running": False, "status": "STARTING"}
         self._stopped    = False
         self._thread: threading.Thread | None = None
@@ -126,6 +127,17 @@ class DartRunner:
     def get_frame_jpeg(self) -> bytes | None:
         with self._lock:
             return self._frame_jpeg
+
+    def get_raw_frame(self):
+        """Latest camera frame without HUD annotations (None until the loop runs).
+        The 'Authorize Person' capture reads faces from here."""
+        with self._lock:
+            return None if self._frame_raw is None else self._frame_raw.copy()
+
+    @property
+    def classifier(self):
+        det = self.detector
+        return det.classifier if det is not None else None
 
     def get_state(self) -> dict:
         with self._lock:
@@ -236,6 +248,9 @@ class DartRunner:
             if not grabbed or frame is None:
                 time.sleep(0.01)
                 continue
+
+            with self._lock:                  # clean copy before the HUD draws on it
+                self._frame_raw = frame.copy()
 
             now = time.monotonic()
             dt  = max(now - last_time, 1e-6)

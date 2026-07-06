@@ -81,6 +81,16 @@ SEND_HZ       = 30
 SEND_INTERVAL = 1.0 / SEND_HZ
 HEARTBEAT_INTERVAL = 0.4
 
+# ── Enrollment (web "Authorize Person" flow) ──
+ENROLL_FRAMES         = 8     # frames grabbed per live capture
+ENROLL_FRAME_INTERVAL = 0.3   # s between grabs (~2.4s capture window)
+ENROLL_MIN_ACCEPTED   = 4     # quality-gated embeddings required before saving
+# Quality gate — a frame only contributes an embedding if the face is big,
+# confident and sharp; bad captures would permanently pollute the pkl db.
+ENROLL_MIN_FACE       = 80    # px, min side of the face bbox
+ENROLL_MIN_DET_SCORE  = 0.5   # InsightFace detector confidence
+ENROLL_MIN_SHARPNESS  = 60.0  # variance-of-Laplacian on the face crop
+
 # ── Auth ──
 SIMILARITY_THRESHOLD     = 0.4
 CLASSIFY_EVERY_N_FRAMES  = 10   # steady-state re-check cadence for a confirmed track

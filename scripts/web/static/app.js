@@ -1,5 +1,6 @@
-// Polls /state ~5x/sec and paints the status panel.
-// The video itself is a plain MJPEG <img>, so JS only handles telemetry/labels.
+// Polls /state ~5x/sec and paints the status strip.
+// The video itself is a plain MJPEG <img>, so JS only handles telemetry + the
+// "Authorize Person" flow.
 
 const $ = (id) => document.getElementById(id);
 const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
@@ -25,67 +26,6 @@ function paint(s) {
   set("serial", s.serial === "connected" ? "● connected"
               : s.serial === "preview"   ? "○ preview (no R3)" : "—");
   set("fps", s.fps != null ? s.fps.toFixed(1) : "—");
-  set("persons", s.n_persons != null ? s.n_persons : "—");
-  set("trackid", s.track_id != null ? "ID " + s.track_id : "none");
-  set("pantilt", (s.pan != null) ? `${s.pan} / ${s.tilt}` : "—");
-
-  if (camSel && !camBusy && s.camera != null) {
-    const want = String(s.camera);
-    const has = [...camSel.options].some((o) => o.value === want);
-    if (has && camSel.value !== want) camSel.value = want;
-  }
-
-  // Fire state chip
-  const chip = $("fireState");
-  if (chip) {
-    set("fireLabel", s.fire_label || "SAFE");
-    let st = "0";
-    if (s.fire) st = "1";
-    else if (s.fire_label === "ARMED") st = "armed";
-    else if (s.fire_label === "SAFE/AUTH") st = "focused";
-    chip.dataset.fire = st;
-  }
-}
-
-// ── live camera switching ──────────────────────────────────────────────
-const camSel = document.getElementById("camSelect");
-let camBusy = false;   // don't let /state overwrite the dropdown mid-switch
-
-async function loadCams() {
-  if (!camSel) return;
-  try {
-    const j = await (await fetch("/cameras", { cache: "no-store" })).json();
-    camSel.innerHTML = "";
-    (j.cameras || []).forEach((i) => {
-      const o = document.createElement("option");
-      o.value = i; o.textContent = "Camera " + i;
-      camSel.appendChild(o);
-    });
-    if (j.current != null) camSel.value = j.current;
-  } catch (e) { /* keep whatever is there */ }
-}
-
-if (camSel) {
-  camSel.addEventListener("change", async () => {
-    const idx = camSel.value;
-    const msg = $("camMsg");
-    camBusy = true;
-    if (msg) { msg.textContent = "switching to camera " + idx + "…"; msg.className = "cam-msg"; }
-    try {
-      const body = new URLSearchParams(); body.set("camera", idx);
-      const j = await (await fetch("/set_camera", { method: "POST", body })).json();
-      if (msg) {
-        msg.textContent = j.ok ? "" : ("⚠ " + (j.error || "switch failed"));
-        msg.className = j.ok ? "cam-msg" : "cam-msg err";
-      }
-      if (!j.ok && j.current != null) camSel.value = j.current;  // revert dropdown
-    } catch (e) {
-      if (msg) { msg.textContent = "⚠ switch error"; msg.className = "cam-msg err"; }
-    } finally {
-      camBusy = false;
-    }
-  });
-  loadCams();
 }
 
 async function tick() {
@@ -99,3 +39,82 @@ async function tick() {
 
 setInterval(tick, 200);
 tick();
+
+// ── Authorize Person ─────────────────────────────────────────────────────
+const authName    = $("authName");
+const authCapture = $("authCapture");
+const authFiles   = $("authFiles");
+
+function authMsg(text, cls) {
+  const el = $("authMsg");
+  if (el) { el.textContent = text || ""; el.className = "auth-msg" + (cls ? " " + cls : ""); }
+}
+
+async function refreshAuthorized() {
+  try {
+    const j = await (await fetch("/authorized", { cache: "no-store" })).json();
+    const names = j.identities || [];
+    set("authList", names.length ? "authorized: " + names.join(", ")
+                                 : "no one authorized yet");
+  } catch (e) { /* keep whatever is there */ }
+}
+
+// POST an enrollment request; on "name exists" ask to overwrite and retry once.
+async function submitAuth(url, buildBody) {
+  const name = (authName.value || "").trim();
+  if (!name) { authMsg("⚠ enter a name first", "err"); return; }
+
+  authCapture.disabled = true;
+  authMsg(url === "/authorize" ? "capturing… look at the camera, hold still"
+                               : "processing photos…");
+  try {
+    let res = await fetch(url, { method: "POST", body: buildBody(name, false) });
+    let j = await res.json();
+    if (res.status === 409 && j.error === "exists") {
+      if (!window.confirm(`"${name}" is already authorized. Overwrite?`)) {
+        authMsg(""); return;
+      }
+      res = await fetch(url, { method: "POST", body: buildBody(name, true) });
+      j = await res.json();
+    }
+    if (j.ok) {
+      authMsg(`✔ ${j.name} authorized (${j.accepted}/${j.captured} frames)`, "ok");
+      authName.value = "";
+      refreshAuthorized();
+    } else {
+      authMsg("⚠ " + (j.error || "enrollment failed"), "err");
+    }
+  } catch (e) {
+    authMsg("⚠ request failed", "err");
+  } finally {
+    authCapture.disabled = false;
+    authFiles.value = "";
+  }
+}
+
+if (authCapture) {
+  authCapture.addEventListener("click", () => {
+    submitAuth("/authorize", (name, overwrite) => {
+      const b = new URLSearchParams();
+      b.set("name", name);
+      if (overwrite) b.set("overwrite", "1");
+      return b;
+    });
+  });
+}
+
+if (authFiles) {
+  authFiles.addEventListener("change", () => {
+    if (!authFiles.files.length) return;
+    const files = [...authFiles.files];   // keep a copy; the input is cleared after
+    submitAuth("/authorize/upload", (name, overwrite) => {
+      const fd = new FormData();
+      fd.set("name", name);
+      if (overwrite) fd.set("overwrite", "1");
+      files.forEach((f) => fd.append("photos", f));
+      return fd;
+    });
+  });
+}
+
+refreshAuthorized();

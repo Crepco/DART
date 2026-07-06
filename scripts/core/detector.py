@@ -99,6 +99,16 @@ class YOLODetector:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    @property
+    def classifier(self):
+        return self._classifier
+
+    def reset_unauthorized_tracks(self) -> int:
+        """See TrackManager.reset_unauthorized. Called from Flask request threads
+        after enrollment; the status writes are plain attribute assignments, so the
+        worst cross-thread effect is one frame of stale verdict."""
+        return self._track_manager.reset_unauthorized()
+
     def submit(self, frame):
         with self._lock:
             self._frame     = frame

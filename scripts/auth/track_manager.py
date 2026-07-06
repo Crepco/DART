@@ -80,6 +80,27 @@ class TrackManager:
         state = self.tracks.get(track_id)
         return state.auth_status if state is not None else "UNKNOWN"
 
+    def reset_unauthorized(self) -> int:
+        """Drop every confirmed-UNAUTHORIZED track back to UNKNOWN so it gets
+        re-classified against a freshly updated embeddings db (the frozen
+        UNAUTHORIZED verdict would otherwise keep a just-enrolled person targeted
+        until their track died).
+
+        Deliberately scoped: AUTHORIZED and UNKNOWN tracks are untouched, so
+        enrollment doesn't make every person in frame re-evaluate at once. The
+        affected tracks sit at UNKNOWN — never a target — until re-confirmed
+        (~2 verdicts), which fails safe: the turret holds rather than flickers.
+        Returns the number of tracks reset.
+        """
+        n = 0
+        for state in self.tracks.values():
+            if state.auth_status == "UNAUTHORIZED":
+                state.auth_status = "UNKNOWN"
+                state.pending_status = None
+                state.consecutive_count = 0
+                n += 1
+        return n
+
     def cleanup(self, active_ids):
         active = set(active_ids)
         for tid in [t for t in self.tracks if t not in active]:
