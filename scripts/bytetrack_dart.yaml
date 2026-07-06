@@ -1,0 +1,30 @@
+# DART ByteTrack config (passed to model.track via config.TRACKER_CONFIG).
+#
+# Why a custom file: the detector feeds the tracker at conf=TRACK_CONF (0.1), NOT
+# PERSON_CONF (0.45) — ultralytics filters detections at the predictor's conf
+# BEFORE the tracker sees them, so with conf=0.45 ByteTrack's low-confidence
+# second-stage association (its whole mechanism for holding a track through
+# motion blur / awkward pose / lighting dips) never received the 0.1-0.45 dets.
+# Any conf dip below 0.45 made the person cease to exist for the tracker, and
+# ~1s later they came back as a brand-new ID with a cold auth verdict.
+#
+# Downstream (HUD / targeting / classification) still only sees boxes with
+# conf >= PERSON_CONF — the low-conf dets exist purely to maintain identity.
+
+tracker_type: bytetrack
+
+track_high_thresh: 0.45  # first-stage association bar — same quality bar as PERSON_CONF
+track_low_thresh: 0.1    # second-stage recovery: 0.1-0.45 dets may MAINTAIN a track
+new_track_thresh: 0.5    # ...but never SPAWN one; fresh IDs need a solid detection
+
+# Frames (tracker update calls) a lost track survives before being dropped.
+# Frame-based inside ultralytics, so wall-clock varies with detector fps:
+# 60 frames ~ 4s at 15fps (worst case, still 4x the observed ~1s gaps) and
+# ~ 8s at the ~7.6fps seen in dim light. When fps drops under load frames get
+# LONGER, so the budget grows in the stressed case. If hardware testing still
+# shows fresh IDs after long occlusions, raise to 90 before anything else.
+track_buffer: 60
+
+match_thresh: 0.8  # IoU association threshold (default). Next knob if hardware
+                   # still shows failed re-association after fast motion: 0.7.
+fuse_score: True   # weight IoU similarity by det score (default)

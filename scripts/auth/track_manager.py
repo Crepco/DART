@@ -1,9 +1,10 @@
 """Per-track authorization state with debouncing."""
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 
 from config import (CLASSIFY_EVERY_N_FRAMES, CLASSIFY_EVERY_N_FRAMES_UNCONFIRMED,
-                    DEBOUNCE_COUNT, DEBOUNCE_COUNT_INITIAL)
+                    DEBOUNCE_COUNT, DEBOUNCE_COUNT_INITIAL, TRACK_STATE_GRACE_S)
 
 
 @dataclass
@@ -12,6 +13,7 @@ class TrackState:
     frame_counter: int = 0
     consecutive_count: int = 0
     pending_status: str | None = None
+    last_seen: float = field(default_factory=time.monotonic)
 
 
 class TrackManager:
@@ -101,7 +103,18 @@ class TrackManager:
                 n += 1
         return n
 
-    def cleanup(self, active_ids):
+    def cleanup(self, active_ids, now: float | None = None):
+        """Time-based grace instead of instant deletion: ByteTrack only reports
+        ACTIVE tracks, so a track mid-dip (lost but still inside the tracker's
+        buffer) is absent from `active_ids` — deleting immediately wiped the
+        verdict a single missed frame before ByteTrack re-attached the same ID.
+        State survives TRACK_STATE_GRACE_S seconds unseen (time, not frames, so
+        the budget doesn't vary with detector fps). `now` is injectable for
+        tests."""
+        now = time.monotonic() if now is None else now
         active = set(active_ids)
-        for tid in [t for t in self.tracks if t not in active]:
-            del self.tracks[tid]
+        for tid, state in list(self.tracks.items()):
+            if tid in active:
+                state.last_seen = now
+            elif now - state.last_seen > TRACK_STATE_GRACE_S:
+                del self.tracks[tid]

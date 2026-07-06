@@ -8,7 +8,8 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
-from config import CAM_HEIGHT, CAM_WIDTH, PERSON_CONF, FACE_CONF
+from config import (CAM_HEIGHT, CAM_WIDTH, PERSON_CONF, FACE_CONF,
+                    TRACK_CONF, TRACKER_CONFIG, TRACK_DEBUG)
 from auth import FaceClassifier, TrackManager
 
 # Run YOLO on the GPU when available; falls back to CPU transparently.
@@ -125,6 +126,7 @@ class YOLODetector:
 
     def _run(self):
         locked_id = None
+        prev_tracked: set = set()   # for TRACK_DEBUG id-change logging
 
         while not self._stopped:
             with self._lock:
@@ -139,9 +141,13 @@ class YOLODetector:
                 continue
 
             try:
+                # conf=TRACK_CONF (0.1), not PERSON_CONF: the predictor's conf
+                # filters detections BEFORE the tracker, and ByteTrack's second
+                # stage needs the low-conf dets to hold a track through dips.
+                # Downstream only ever sees boxes >= PERSON_CONF (filter below).
                 p_results = self._person_model.track(
-                    frame, persist=True, classes=[0], conf=PERSON_CONF,
-                    verbose=False, tracker="bytetrack.yaml", device=DEVICE,
+                    frame, persist=True, classes=[0], conf=TRACK_CONF,
+                    verbose=False, tracker=TRACKER_CONFIG, device=DEVICE,
                 )
             except Exception as e:
                 print(f"[WARN] Person model error: {e}")
@@ -156,22 +162,45 @@ class YOLODetector:
             h_f, w_f = frame.shape[:2]
 
             r = p_results[0]
-            if r.boxes is not None and len(r.boxes):
-                ids = (r.boxes.id.int().cpu().tolist()
-                       if r.boxes.id is not None else
-                       list(range(len(r.boxes))))
+            tracked = {}   # every id ByteTrack reports this frame -> det conf
+            # boxes.id is None when the tracker activated nothing this frame —
+            # the results are then raw unmatched detections (mostly sub-threshold
+            # noise at TRACK_CONF). No identity -> nothing to show or track;
+            # inventing sequential fallback ids here collides with real track ids.
+            if r.boxes is not None and len(r.boxes) and r.boxes.id is not None:
+                ids   = r.boxes.id.int().cpu().tolist()
+                confs = r.boxes.conf.cpu().tolist()
 
-                for box, tid in zip(r.boxes.xyxy.cpu().tolist(), ids):
+                for box, tid, conf in zip(r.boxes.xyxy.cpu().tolist(), ids, confs):
+                    tracked[tid] = conf
+                    # TRACK_CONF..PERSON_CONF dets exist only to keep ByteTrack's
+                    # identity alive through dips — hidden from HUD/targeting.
+                    if conf < PERSON_CONF:
+                        continue
                     x1, y1, x2, y2 = [int(v) for v in box]
                     all_persons.append((x1, y1, x2, y2, tid))
 
+            if TRACK_DEBUG:
+                cur = set(tracked)
+                added   = [f"+{tid}({tracked[tid]:.2f})" for tid in sorted(cur - prev_tracked)]
+                removed = [f"-{tid}" for tid in sorted(prev_tracked - cur)]
+                if added or removed:
+                    print(f"[TRACK] {' '.join(added + removed)} active={sorted(cur)}")
+                prev_tracked = cur
+
+            # Runs every frame (even with zero detections): any id the tracker
+            # still reports counts as seen; the time-based verdict grace only
+            # starts once ByteTrack itself loses the track.
+            self._track_manager.cleanup(tracked.keys())
+
+            if all_persons:
                 current_ids = [p[4] for p in all_persons]
 
-                self._track_manager.cleanup(current_ids)
-
-                # Apply any finished async classification (skip departed tracks).
+                # Apply any finished async classification. Accept it for any id
+                # the tracker still knows (even conf-dipped), so a verdict that
+                # finished during a dip isn't discarded.
                 res = self._worker.poll()
-                if res is not None and res[0] in current_ids:
+                if res is not None and res[0] in tracked:
                     self._track_manager.update_status(res[0], res[1])
 
                 # Tick every track; collect those due for (re)classification.

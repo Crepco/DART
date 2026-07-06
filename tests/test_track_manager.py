@@ -3,7 +3,7 @@ post-enrollment reset."""
 
 from auth.track_manager import TrackManager
 
-from config import DEBOUNCE_COUNT_INITIAL
+from config import DEBOUNCE_COUNT_INITIAL, TRACK_STATE_GRACE_S
 
 
 def confirm(tm, tid, status):
@@ -50,3 +50,49 @@ def test_unknown_reads_do_not_advance_debounce():
     tm.update_status(1, "UNKNOWN")
     assert tm.get_status(1) == "UNKNOWN"
     assert tm.tracks[1].pending_status is None
+
+
+# ── cleanup grace (time-based; clock injected) ──────────────────────────────
+
+def test_cleanup_grace_keeps_verdict_through_brief_absence():
+    tm = TrackManager()
+    confirm(tm, 1, "UNAUTHORIZED")
+    t0 = 1000.0
+    tm.cleanup([1], now=t0)                                # seen -> stamp
+    tm.cleanup([], now=t0 + TRACK_STATE_GRACE_S - 0.5)     # absent, within grace
+    assert tm.get_status(1) == "UNAUTHORIZED"              # verdict survived
+
+
+def test_cleanup_deletes_after_grace_expires():
+    tm = TrackManager()
+    confirm(tm, 1, "UNAUTHORIZED")
+    t0 = 1000.0
+    tm.cleanup([1], now=t0)
+    tm.cleanup([], now=t0 + TRACK_STATE_GRACE_S + 0.1)
+    assert 1 not in tm.tracks
+    assert tm.get_status(1) == "UNKNOWN"
+
+
+def test_cleanup_reappearance_refreshes_grace_timer():
+    tm = TrackManager()
+    confirm(tm, 1, "UNAUTHORIZED")
+    t0 = 1000.0
+    tm.cleanup([1], now=t0)
+    t1 = t0 + TRACK_STATE_GRACE_S - 1.0
+    tm.cleanup([1], now=t1)                                # reappears -> re-stamp
+    tm.cleanup([], now=t1 + TRACK_STATE_GRACE_S - 0.5)     # absent, new window
+    assert tm.get_status(1) == "UNAUTHORIZED"
+
+
+def test_cleanup_runs_with_no_active_tracks():
+    tm = TrackManager()
+    confirm(tm, 1, "UNAUTHORIZED")
+    confirm(tm, 2, "AUTHORIZED")
+    t0 = 1000.0
+    tm.cleanup([1, 2], now=t0)
+    # detector now calls cleanup every frame, including empty frames
+    tm.cleanup([], now=t0 + 1.0)
+    assert tm.get_status(1) == "UNAUTHORIZED"
+    assert tm.get_status(2) == "AUTHORIZED"
+    tm.cleanup([], now=t0 + TRACK_STATE_GRACE_S + 1.0)
+    assert not tm.tracks

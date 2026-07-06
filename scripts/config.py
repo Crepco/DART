@@ -36,8 +36,21 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 PERSON_MODEL = str(PROJECT_ROOT / "models" / "yolov8n.pt")
 FACE_MODEL   = str(PROJECT_ROOT / "models" / "yolov8n-face.pt")
 LABELS_FILE  = str(PROJECT_ROOT / "labels.txt")
-PERSON_CONF  = 0.45   # lower = detect a person slightly earlier as they enter frame
+PERSON_CONF  = 0.45   # min conf for a person box to be shown/targeted/classified
 FACE_CONF    = 0.45
+
+# ── Tracking (ByteTrack) ──
+# The tracker is fed detections down to TRACK_CONF so ByteTrack's second-stage
+# association can hold a track through conf dips (blur, pose, lighting) — the
+# predictor's conf filters dets BEFORE the tracker, so feeding it PERSON_CONF
+# starved that mechanism and caused ~1s track drops + fresh IDs. Boxes below
+# PERSON_CONF maintain identity only; they are never displayed or targeted.
+TRACK_CONF     = 0.1
+TRACKER_CONFIG = str(SCRIPT_DIR / "bytetrack_dart.yaml")   # tuned thresholds + buffer
+TRACK_STATE_GRACE_S = 8.0   # seconds an unseen track keeps its auth verdict —
+                            # time-based (not frames) so it doesn't shrink with fps;
+                            # sized to outlive track_buffer at both fps extremes
+TRACK_DEBUG = False         # True: log track-ID set changes (+id(conf) / -id)
 
 # ── Servo ──
 STOP_PAN    = 90
