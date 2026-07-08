@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DART — Control Panel</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+</head>
+<body>
+  <div class="frame">
+
+    <header class="titlebar panel">
+      <div class="title">
+        <span class="t-green">DART:</span>
+        Autonomous Detection, Aiming, and Real-Time Tracking System
+        <span class="t-dim">— Control Panel</span>
+      </div>
+      <div class="head-controls">
+        <button id="toggleTurret" class="btn-line btn-toggle" type="button" disabled>…</button>
+        <div class="pickers">
+          <label>CAM <select id="cameraSelect"></select></label>
+          <label>PORT <select id="portSelect"></select></label>
+          <button id="rescan" class="btn-scan" type="button" title="re-scan devices">&#10227;</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="grid">
+
+      <!-- ── left column: camera feed + telemetry ── -->
+      <section class="col-main">
+        <div class="panel feed-panel">
+          <div class="panel-head">
+            <span class="panel-title">MAIN CAMERA FEED — REAL-TIME HEADS-UP DISPLAY (HUD)</span>
+            <span id="liveDot" class="live"><i class="dot"></i>LIVE</span>
+          </div>
+          <div class="feed-wrap">
+            <img id="video" alt="">
+            <div id="feedCover" class="feed-cover">
+              <div class="cover-reticle" aria-hidden="true"></div>
+              <div class="cover-title" id="coverTitle">SYSTEM OFFLINE</div>
+              <div class="cover-sub" id="coverSub">START TURRET TO ENGAGE FEED</div>
+            </div>
+            <div id="feedBanner" class="feed-banner hidden"></div>
+          </div>
+        </div>
+
+        <div class="panel telemetry">
+          <div class="panel-head"><span class="panel-title">TELEMETRY DASHBOARD</span></div>
+          <div class="tele-grid">
+            <div class="tele-rows">
+              <div class="trow"><span class="k">Loop Rate</span><span class="v" id="tFps">—</span></div>
+              <div class="trow"><span class="k">Target ID</span><span class="v" id="tTid">—</span></div>
+              <div class="trow"><span class="k">Error Vector</span><span class="v" id="tErr">—</span></div>
+              <div class="trow"><span class="k">Pan Duty</span><span class="v" id="tPan">—</span></div>
+              <div class="trow"><span class="k">Tilt Duty</span><span class="v" id="tTilt">—</span></div>
+            </div>
+            <div class="tele-graph">
+              <div class="graph-head"><span>LOOP RATE (FPS)</span><span class="v" id="gFps">—</span></div>
+              <canvas id="fpsGraph" width="320" height="72"></canvas>
+              <div class="graph-x"><span>-60s</span><span>-40s</span><span>-20s</span><span>Now</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── right sidebar ── -->
+      <aside class="col-side">
+        <div class="panel">
+          <div class="panel-head"><span class="panel-title">AUTHORIZATION MANAGER</span></div>
+          <div class="pad auth-mgr">
+            <label class="field-label" for="authName">Name:</label>
+            <input id="authName" class="auth-input" type="text" autocomplete="off"
+                   spellcheck="false" placeholder="operator name">
+            <div class="field-label">Source Selection:</div>
+            <label class="radio">
+              <input type="radio" name="authSource" value="webcam" checked>
+              <span>Live USB Webcam</span>
+            </label>
+            <label class="radio">
+              <input type="radio" name="authSource" value="folder">
+              <span>Local Image Folder</span>
+            </label>
+            <button id="startCapture" class="btn-line btn-wide" type="button">START CAPTURE (10)</button>
+            <input id="authFiles" type="file" accept="image/jpeg,image/png" multiple hidden>
+            <div class="auth-msg" id="authMsg"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><span class="panel-title">ENROLLED DATABASE (PKL)</span></div>
+          <div class="pad">
+            <ol id="dbList" class="db-list"></ol>
+            <div class="db-total">Total Enrolled: <span id="dbTotal">0</span></div>
+          </div>
+        </div>
+
+        <div class="panel log-panel">
+          <div class="panel-head"><span class="panel-title">SYSTEM LOG WINDOW</span></div>
+          <div id="logScroll" class="log-scroll" aria-live="polite"></div>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="footer panel">
+      <!-- status chips: each reflects real subsystem state (never decoration) -->
+      <div class="foot-chips">
+        <span class="chip" id="chipTrack"><i class="ic ic-target"></i>TRACKING ACTIVE</span>
+        <span class="chip" id="chipCam"><i class="ic ic-cam"></i>CAMERA LIVE</span>
+        <span class="chip" id="chipTele"><i class="ic ic-wave"></i>TELEMETRY STABLE</span>
+        <span class="chip" id="chipEng"><i class="ic ic-shield"></i>SYSTEM ENGAGED</span>
+      </div>
+      <div class="foot-right">
+        TURRET PORT: <span class="v" id="portInfo">{{ default_port }} ({{ baud }})</span>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    window.DART_CONST = {
+      stopPan: {{ stop_pan }}, stopTilt: {{ stop_tilt }},
+      baud: {{ baud }}, defaultPort: "{{ default_port }}"
+    };
+  </script>
+  <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+  <script src="{{ url_for('static', filename='wizard.js') }}"></script>
+</body>
+</html>

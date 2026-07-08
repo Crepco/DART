@@ -24,6 +24,7 @@ from core.detector import select_face
 from core.pid import asym_ema, slew_step
 from main import update_fire_state, apply_output_deadband, AUTH_COLS
 
+from .eventlog import log as event_log
 from .serial_link import SerialLink
 
 
@@ -37,50 +38,87 @@ def _fire_label_dart(fire, locked, locked_face_auth):
     return "SAFE", (120, 120, 120)
 
 
+# Web-HUD palette (BGR) — local to this module so the desktop HUD (main.py)
+# keeps the shared config.py COL_* colours untouched. Person brackets + chips
+# use AUTH_COLS per verdict: red UNAUTHORIZED / gray UNKNOWN / green AUTHORIZED
+# must survive the green theme.
+HUD_GREEN = (122, 227, 78)    # primary lines/text (theme green, ~#4ee37a)
+HUD_DIM   = (96, 132, 92)     # secondary lines / non-tracking text
+HUD_CHIP  = (12, 22, 10)      # label-chip fill (near-black green)
+_FONT     = cv2.FONT_HERSHEY_SIMPLEX
+
+
+def _corner_brackets(frame, x1, y1, x2, y2, col, thickness=1):
+    """Mockup-style box: 8 short lines at the corners instead of a rectangle."""
+    w, h = x2 - x1, y2 - y1
+    arm = max(4, min(28, int(0.18 * min(w, h)), w // 2, h // 2))
+    for (cx, cy, dx, dy) in ((x1, y1, 1, 1), (x2, y1, -1, 1),
+                             (x1, y2, 1, -1), (x2, y2, -1, -1)):
+        cv2.line(frame, (cx, cy), (cx + dx * arm, cy), col, thickness, cv2.LINE_AA)
+        cv2.line(frame, (cx, cy), (cx, cy + dy * arm), col, thickness, cv2.LINE_AA)
+
+
+def _label_chip(frame, x, y_baseline, text, col, w_f):
+    """Filled dark chip with a 1px border; anchored above y_baseline, clamped
+    on-screen and below the 32px status bar (a box touching the frame top
+    otherwise pushes its chip into the bar text)."""
+    (tw, th), _ = cv2.getTextSize(text, _FONT, 0.45, 1)
+    pad = 5
+    x = max(2, min(x, w_f - tw - 2 * pad - 2))
+    yb = max(th + 2 * pad + 36, y_baseline)
+    cv2.rectangle(frame, (x, yb - th - 2 * pad), (x + tw + 2 * pad, yb),
+                  HUD_CHIP, -1)
+    cv2.rectangle(frame, (x, yb - th - 2 * pad), (x + tw + 2 * pad, yb),
+                  col, 1, cv2.LINE_AA)
+    cv2.putText(frame, text, (x + pad, yb - pad), _FONT, 0.45, col, 1,
+                cv2.LINE_AA)
+
+
 def _draw_hud(frame, status, pan_cmd, tilt_cmd, smooth_cx, smooth_cy,
               all_persons, faces, track_id, w_f, h_f, error_x, error_y,
               fire_label, fire_col, auth_statuses):
-    """Annotate the frame: person/face boxes, centroid, top status bar, reticle, and lock
-    ring. Adapted from main.draw_hud, kept self-contained so the proven desktop path
-    (main.py) is untouched."""
+    """Annotate the frame: person/face brackets, verdict chips, centroid, top
+    status bar, reticle, and lock ring. Same inputs and information as before —
+    only the drawing style changed (dashboard terminal/HUD look). Kept
+    self-contained so the proven desktop path (main.py) is untouched."""
     tracking   = (status == "TRACKING")
-    bar_col    = COL_TRACKING if tracking else COL_NO_BODY
+    bar_col    = HUD_GREEN if tracking else HUD_DIM
     cx_f, cy_f = w_f // 2, h_f // 2
 
     for (x1, y1, x2, y2, tid) in all_persons:
         auth_status = auth_statuses.get(tid, "UNKNOWN")
-        col         = AUTH_COLS[auth_status]
+        col         = AUTH_COLS[auth_status]   # brackets + chip share the verdict colour
         is_target   = (tid == track_id)
-        thickness   = 3 if is_target else 1
-        cv2.rectangle(frame, (x1, y1), (x2, y2), col, thickness, cv2.LINE_AA)
-        cv2.putText(frame, f"ID{tid} {auth_status}", (x1, y1 - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
+        _corner_brackets(frame, x1, y1, x2, y2, col, 2 if is_target else 1)
+        _label_chip(frame, x1, y1 - 8, f"ID:{tid} {auth_status}", col, w_f)
 
     for (x1, y1, x2, y2) in faces:
-        cv2.rectangle(frame, (x1, y1), (x2, y2), COL_FACE_BOX, 2, cv2.LINE_AA)
+        _corner_brackets(frame, x1, y1, x2, y2, HUD_GREEN, 1)
 
     if smooth_cx is not None and tracking:
         cv2.line(frame, (int(smooth_cx), int(smooth_cy)), (cx_f, cy_f),
-                 (80, 80, 80), 1, cv2.LINE_AA)
-        cv2.circle(frame, (int(smooth_cx), int(smooth_cy)), 8, COL_CENTROID, -1, cv2.LINE_AA)
-        cv2.circle(frame, (int(smooth_cx), int(smooth_cy)), 8, (0, 0, 0), 1, cv2.LINE_AA)
+                 HUD_DIM, 1, cv2.LINE_AA)
+        cv2.circle(frame, (int(smooth_cx), int(smooth_cy)), 4, HUD_GREEN, -1,
+                   cv2.LINE_AA)
 
     overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (w_f, 40), (10, 10, 10), -1)
-    cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+    cv2.rectangle(overlay, (0, 0), (w_f, 30), (8, 12, 8), -1)
+    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
+    cv2.line(frame, (0, 31), (w_f, 31), HUD_DIM, 1, cv2.LINE_AA)
 
     tid_label = f"  ID={track_id}" if track_id is not None else ""
-    bar_text  = (f"[{status}]{tid_label}   Pan {pan_cmd:3d}  Tilt {tilt_cmd:3d}"
-                 f"   Err ({int(error_x):+d}, {int(error_y):+d})")
-    cv2.putText(frame, bar_text, (10, 27),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, bar_col, 2, cv2.LINE_AA)
-    cv2.putText(frame, fire_label, (w_f - 150, 27),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, fire_col, 2, cv2.LINE_AA)
+    bar_text  = (f"[{status}]{tid_label}   PAN {pan_cmd:3d}  TILT {tilt_cmd:3d}"
+                 f"   ERR ({int(error_x):+d},{int(error_y):+d})")
+    cv2.putText(frame, bar_text, (10, 20), _FONT, 0.5, bar_col, 1, cv2.LINE_AA)
+    (fw, _), _ = cv2.getTextSize(fire_label, _FONT, 0.5, 2)
+    cv2.putText(frame, fire_label, (w_f - fw - 10, 20), _FONT, 0.5, fire_col, 2,
+                cv2.LINE_AA)
 
     arm = 10 if tracking else 18
-    cv2.line(frame, (cx_f - arm, cy_f), (cx_f + arm, cy_f), COL_RETICLE, 1, cv2.LINE_AA)
-    cv2.line(frame, (cx_f, cy_f - arm), (cx_f, cy_f + arm), COL_RETICLE, 1, cv2.LINE_AA)
-    cv2.circle(frame, (cx_f, cy_f), arm + 8, COL_RETICLE, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx_f - arm, cy_f), (cx_f + arm, cy_f), HUD_GREEN, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx_f, cy_f - arm), (cx_f, cy_f + arm), HUD_GREEN, 1, cv2.LINE_AA)
+    cv2.circle(frame, (cx_f, cy_f), arm + 8, HUD_GREEN, 1, cv2.LINE_AA)
+    # the lock ring stays fire-coloured — ARMED/FIRING must remain distinct
     cv2.circle(frame, (cx_f, cy_f), LOCK_ON_RADIUS, fire_col, 1, cv2.LINE_AA)
 
 
@@ -96,7 +134,9 @@ class DartRunner:
         self._cam_lock   = threading.Lock()   # guards hot-swapping self.cam
         self._frame_jpeg: bytes | None = None
         self._frame_raw  = None               # latest un-annotated frame (enrollment)
-        self._state: dict = {"running": False, "status": "STARTING"}
+        # port present from the start so the footer readout works while loading
+        self._state: dict = {"running": False, "status": "STARTING",
+                             "port": self.port, "baud": BAUD_RATE}
         self._stopped    = False
         self._thread: threading.Thread | None = None
 
@@ -183,6 +223,7 @@ class DartRunner:
             self.error = str(exc)
             self._set_state(running=False, status="ERROR", error=str(exc))
             print(f"[ERROR][runner] {exc}")
+            event_log.emit("error", "SYS", f"runner error: {exc}", echo=False)
         finally:
             self._teardown()
 
@@ -223,6 +264,14 @@ class DartRunner:
         connected = self.link.connect()
         if not connected:
             self.link = None
+        # echo=False: SerialLink.connect() already prints the same fact
+        if connected:
+            event_log.emit("info", "SERIAL",
+                           f"connected on {self.port} @ {BAUD_RATE}", echo=False)
+        else:
+            event_log.emit("warn", "SERIAL",
+                           f"no Arduino on {self.port} — preview mode "
+                           f"(servos inactive)", echo=False)
 
         # ── loop state (mirrors main.py) ──
         smooth_cx = smooth_cy = None
@@ -239,9 +288,18 @@ class DartRunner:
         lock_count = 0
         fps = 0.0
 
+        # ── event-capture state (logging only — diff-based so core/auth stay
+        # untouched; the loop already receives every per-frame value) ──
+        prev_status     = "RUNNING"
+        prev_fire_label = "SAFE"
+        prev_auth: dict = {}    # tid -> last verdict emitted to the log
+        track_seen: dict = {}   # tid -> last monotonic time seen in all_persons
+
         self._set_state(status="RUNNING",
                         serial=("connected" if self.link else "preview"))
         print("[INFO] Runner loop started")
+        event_log.emit("info", "SYS", "models loaded — tracking loop started",
+                       echo=False)
 
         while not self._stopped:
             with self._cam_lock:
@@ -355,6 +413,39 @@ class DartRunner:
 
             fire_label, fire_col = _fire_label_dart(fire, locked, locked_face_auth)
 
+            # ── event capture (logging only, no behavior change): diff this
+            # frame's already-computed values against the last emitted ones ──
+            if status != prev_status:
+                event_log.emit("info", "SYS", f"state: {prev_status} -> {status}",
+                               echo=False)
+                prev_status = status
+            for (_bx1, _by1, _bx2, _by2, tid) in all_persons:
+                cur = auth_statuses.get(tid, "UNKNOWN")
+                if tid not in track_seen:
+                    event_log.emit("info", "TRACK", f"Track {tid} acquired",
+                                   echo=False)
+                    prev_auth[tid] = "UNKNOWN"
+                if prev_auth.get(tid) != cur:
+                    event_log.emit("warn" if cur == "UNAUTHORIZED" else "info",
+                                   "AUTH",
+                                   f"Track {tid}: {prev_auth.get(tid, 'UNKNOWN')}"
+                                   f" -> {cur}", echo=False)
+                    prev_auth[tid] = cur
+                track_seen[tid] = now
+            # "lost" only after 2s absent so ByteTrack conf dips don't spam
+            for tid in [t for t, ts in track_seen.items() if now - ts > 2.0]:
+                event_log.emit("info", "TRACK", f"Track {tid} lost", echo=False)
+                track_seen.pop(tid, None)
+                prev_auth.pop(tid, None)
+            if fire_label != prev_fire_label:
+                lvl = ("error" if fire_label == "FIRING"
+                       else "warn" if fire_label == "ARMED" else "info")
+                tgt = f" (target ID {track_id})" if track_id is not None else ""
+                event_log.emit(lvl, "FIRE",
+                               f"{prev_fire_label} -> {fire_label}{tgt}",
+                               echo=False)
+                prev_fire_label = fire_label
+
             _draw_hud(frame, status, pan_cmd, tilt_cmd, smooth_cx, smooth_cy,
                       all_persons, faces, track_id, w_f, h_f, error_x, error_y,
                       fire_label, fire_col, auth_statuses)
@@ -379,8 +470,11 @@ class DartRunner:
                 "track_id": track_id, "n_persons": len(all_persons),
                 "pan": pan_cmd, "tilt": tilt_cmd, "fire": bool(fire),
                 "locked": bool(locked), "fire_label": fire_label,
+                # post-deadband pixel error — the same numbers the HUD bar shows
+                "error_x": int(round(error_x)), "error_y": int(round(error_y)),
                 "serial": "connected" if self.link else "preview",
                 "camera": self.camera,
+                "port": self.port, "baud": BAUD_RATE,
                 "fps": round(fps, 1),
                 "auth_provider": clf.provider,
                 "auth_ms": (round(clf.classify_ms) if clf.classify_ms is not None
@@ -392,6 +486,7 @@ class DartRunner:
                 self._state = state
 
         self._set_state(running=False, status="STOPPED")
+        event_log.emit("info", "SYS", "runner stopped", echo=False)
 
     def _teardown(self):
         for closer in (

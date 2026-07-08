@@ -17,6 +17,10 @@ import time
 from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, url_for)
 
+from .enroll_session import (MAX_ATTEMPTS, POSES, REQUIRED_POSES,
+                             EnrollSessionManager)
+from .eventlog import log as event_log
+
 app = Flask(__name__)
 # Re-read templates from disk per request and don't let the browser cache static
 # assets, so editing the HTML/CSS/JS shows up on a refresh without restarting Python.
@@ -27,6 +31,8 @@ _runner = None
 _runner_lock = threading.Lock()
 _probe_lock = threading.Lock()   # serialize device scans — concurrent probes fight
                                  # over the same DSHOW devices
+
+_enroll_sessions = EnrollSessionManager()   # the wizard's single active session
 
 # Statuses during which the runner hasn't finished claiming its camera yet.
 _STARTING_STATUSES = ("STARTING", "LOADING MODELS")
@@ -138,7 +144,12 @@ def _probe_ports():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # config imports cv2 — local import keeps the module import light; /ports
+    # (called on first paint) already pays this cost once per process anyway.
+    from config import BAUD_RATE, PORT, STOP_PAN, STOP_TILT
+    return render_template("dashboard.html", stop_pan=STOP_PAN,
+                           stop_tilt=STOP_TILT, baud=BAUD_RATE,
+                           default_port=PORT)
 
 
 @app.route("/start", methods=["POST"])
@@ -159,10 +170,22 @@ def start():
         if r is not None:
             status = r.get_state().get("status")
             if r.is_alive() and status not in _DEAD_STATUSES:
-                print(f"[INFO] /start ignored — runner already active (status={status}).")
+                event_log.emit("info", "SYS",
+                               f"/start ignored — runner already active (status={status})")
                 return redirect(url_for("run_view"))
-            print(f"[INFO] Replacing dead runner (status={status}).")
+            event_log.emit("info", "SYS", f"replacing dead runner (status={status})")
             r.stop(reason="/start replacing dead runner")
+        # about to create a runner: free any wizard-held camera first. Only
+        # here (not on the ignored-start path above) so a stray double /start
+        # can't kill a live-mode wizard session.
+        prev_session = _enroll_sessions.cancel_active()
+        if prev_session is not None:
+            event_log.emit("warn", "ENROLL",
+                           f'capture for "{prev_session.name}" cancelled — '
+                           f"turret starting")
+        event_log.emit("info", "SYS",
+                       f"turret start requested (camera={'default' if camera is None else camera}, "
+                       f"port={port or 'default'})")
         _runner = runner_cls(camera=camera, port=port)
         _runner.start()
     return redirect(url_for("run_view"))
@@ -201,15 +224,15 @@ def set_camera():
     if r is None:
         return jsonify({"ok": False, "error": "no runner active"}), 409
     ok, err = r.set_camera(idx)
+    if ok:
+        event_log.emit("info", "SYS", f"camera switched to index {idx}", echo=False)
     return jsonify({"ok": ok, "error": err, "current": r.camera})
 
 
 @app.route("/run")
 def run_view():
-    with _runner_lock:
-        if _runner is None:
-            return redirect(url_for("index"))
-    return render_template("run.html")
+    """Old two-page layout's run URL — everything lives on the dashboard now."""
+    return redirect(url_for("index"))
 
 
 @app.route("/stop", methods=["POST"])
@@ -218,14 +241,17 @@ def stop():
     with _runner_lock:
         r, _runner = _runner, None
     if r is not None:
+        event_log.emit("info", "SYS", "turret stop requested")
         r.stop(reason="/stop route")
     return ("", 204)
 
 
 # ── Authorize Person ─────────────────────────────────────────────────────────
-# SECURITY: these endpoints ARE the turret's access control and carry no auth of
-# their own. The server binds 127.0.0.1 by default and that is the operating
-# assumption — on 0.0.0.0, anyone who can reach the port can authorize themselves.
+# SECURITY: these endpoints — /authorize, /authorize/upload, AND the wizard's
+# /enroll/begin|capture|ping|finish|cancel — ARE the turret's access control
+# and carry no auth of their own; they all write the same authorized.pkl. The
+# server binds 127.0.0.1 by default and that is the operating assumption — on
+# 0.0.0.0, anyone who can reach the port can authorize themselves.
 
 
 def _finish_enrollment(clf, name, embeddings):
@@ -239,7 +265,8 @@ def _finish_enrollment(clf, name, embeddings):
     if r is not None and r.detector is not None:
         n = r.detector.reset_unauthorized_tracks()
         if n:
-            print(f"[INFO] Enrollment: {n} UNAUTHORIZED track(s) reset for re-check.")
+            event_log.emit("info", "ENROLL",
+                           f"{n} UNAUTHORIZED track(s) reset for re-check")
     return names
 
 
@@ -316,6 +343,9 @@ def authorize():
             reasons.append(why)
 
     if len(embeddings) < ENROLL_MIN_ACCEPTED:
+        event_log.emit("warn", "ENROLL",
+                       f'"{name}" capture rejected — only {len(embeddings)}/'
+                       f'{ENROLL_FRAMES} usable frames ({_reject_reasons(reasons)})')
         return jsonify({
             "ok": False, "accepted": len(embeddings), "captured": ENROLL_FRAMES,
             "error": (f"only {len(embeddings)}/{ENROLL_FRAMES} usable frames "
@@ -323,6 +353,8 @@ def authorize():
         }), 422
 
     names = _finish_enrollment(clf, name, embeddings)
+    event_log.emit("info", "ENROLL",
+                   f'"{name}" authorized ({len(embeddings)}/{ENROLL_FRAMES} frames)')
     return jsonify({"ok": True, "name": name, "captured": ENROLL_FRAMES,
                     "accepted": len(embeddings), "identities": names})
 
@@ -360,14 +392,210 @@ def authorize_upload():
     # Photos are deliberate (unlike the live burst), so one usable face is enough —
     # same bar as the enroll_from_images CLI.
     if not embeddings:
+        event_log.emit("warn", "ENROLL",
+                       f'"{name}" upload rejected — no usable face '
+                       f'({_reject_reasons(reasons)})')
         return jsonify({
             "ok": False, "accepted": 0, "captured": len(files),
             "error": f"no usable face in uploads ({_reject_reasons(reasons)})",
         }), 422
 
     names = _finish_enrollment(clf, name, embeddings)
+    event_log.emit("info", "ENROLL",
+                   f'"{name}" authorized from {len(files)} photo(s) '
+                   f'({len(embeddings)} accepted)')
     return jsonify({"ok": True, "name": name, "captured": len(files),
                     "accepted": len(embeddings), "identities": names})
+
+
+# ── Guided-capture wizard (/enroll/*) ────────────────────────────────────────
+# Same access-control caveat as /authorize above. The wizard walks 2 sets of
+# 5 poses; each shot goes through the SAME quality gate (extract_embedding).
+
+
+def _open_enroll_camera(camera):
+    """Open + hold a capture device for a wizard session (DART stopped).
+    _probe_lock is taken around the open only — the session then owns the
+    device; /cameras probing simply skips an index it can't open."""
+    import cv2
+    from config import CAM_BACKEND
+    with _probe_lock:
+        cap = cv2.VideoCapture(camera, CAM_BACKEND)
+    if not cap.isOpened():
+        cap.release()
+        raise RuntimeError(f"camera {camera} unavailable (in use or not connected)")
+    return cap
+
+
+def _session_frame(s):
+    """One fresh frame for a wizard shot: the live runner's raw frame, or the
+    session-held device (flush 2 buffered frames first — DSHOW staleness)."""
+    if s.cap is None:
+        r = _runner_ref()
+        return r.get_raw_frame() if (r is not None and r.is_alive()) else None
+    for _ in range(2):
+        s.cap.grab()
+    ok, frame = s.cap.read()
+    return frame if ok else None
+
+
+def _thumb_data_uri(frame, width=160):
+    """Small JPEG data URI of an accepted shot — wizard feedback only."""
+    import base64
+
+    import cv2
+    h, w = frame.shape[:2]
+    if w > width:
+        frame = cv2.resize(frame, (width, max(1, round(h * width / w))))
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+    if not ok:
+        return None
+    return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+
+
+_EXPIRED = {"ok": False, "error": "session expired — restart capture"}
+
+
+@app.route("/enroll/begin", methods=["POST"])
+def enroll_begin():
+    """Start a wizard session. Replaces any existing session (single operator,
+    single camera); the reply then carries `cancelled_previous` so the UI can
+    surface the discarded progress instead of it vanishing silently."""
+    from config import CAM_INDEX, ENROLL_MIN_ACCEPTED
+    from .enroll_session import EnrollSession
+
+    name = (request.form.get("name") or "").strip()
+    overwrite = request.form.get("overwrite") == "1"
+    if not name:
+        return jsonify({"ok": False, "error": "missing name"}), 400
+
+    r = _runner_ref()
+    live = r is not None and r.is_alive()
+    if live and r.get_raw_frame() is None:
+        return jsonify({"ok": False,
+                        "error": "DART is starting — try again shortly"}), 409
+
+    clf = _get_classifier(r if live else None)
+    if not overwrite and name in clf.db:
+        return jsonify({"ok": False, "error": "exists", "name": name}), 409
+
+    # free any previous session BEFORE opening a device — it may hold the camera
+    prev = _enroll_sessions.cancel_active()
+    cancelled = None
+    if prev is not None:
+        cancelled = {"name": prev.name, "accepted": prev.accepted}
+        event_log.emit("warn", "ENROLL",
+                       f'previous capture for "{prev.name}" discarded '
+                       f"({prev.accepted} shots) — new capture started")
+
+    camera = request.form.get("camera", type=int)
+    camera = CAM_INDEX if camera is None else camera
+    cap = None
+    if not live:
+        try:
+            cap = _open_enroll_camera(camera)
+        except RuntimeError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+
+    s = EnrollSession(name, overwrite, camera, cap)
+    _enroll_sessions.replace(s)
+    event_log.emit("info", "ENROLL", f'guided capture started for "{name}"')
+    resp = {"ok": True, "session": s.sid, "poses": list(POSES),
+            "sets": 2, "per_set": len(POSES),
+            "min_accepted": ENROLL_MIN_ACCEPTED,
+            "required_poses": list(REQUIRED_POSES), "live": live}
+    if cancelled is not None:
+        resp["cancelled_previous"] = cancelled
+    return jsonify(resp)
+
+
+@app.route("/enroll/capture", methods=["POST"])
+def enroll_capture():
+    """One wizard shot, quality-gated. A duplicate pose+set submission (e.g. a
+    double-click) is harmless by design: it just appends another embedding to
+    that pose's bucket, which only improves the mean embedding save_identity
+    computes and can never weaken the diversity floor — so no duplicate-guard."""
+    sid = request.form.get("session") or ""
+    pose = request.form.get("pose") or ""
+    if pose not in POSES:
+        return jsonify({"ok": False, "error": f"unknown pose {pose!r}"}), 400
+    s = _enroll_sessions.get(sid)
+    if s is None:
+        return jsonify(dict(_EXPIRED)), 404
+    if s.attempts >= MAX_ATTEMPTS:
+        return jsonify({"ok": False,
+                        "error": "attempt limit reached — finish or cancel"}), 409
+    s.attempts += 1
+
+    frame = _session_frame(s)
+    if frame is None:
+        return jsonify({"ok": False, "error": "no frame available"}), 409
+
+    clf = _get_classifier(_runner_ref() if s.cap is None else None)
+    emb, why = clf.extract_embedding(frame)
+    if emb is None:
+        return jsonify({"ok": False, "reason": why, "accepted": s.accepted})
+    s.add(pose, emb)
+    return jsonify({"ok": True, "pose": pose, "accepted": s.accepted,
+                    "thumb": _thumb_data_uri(frame)})
+
+
+@app.route("/enroll/ping", methods=["POST"])
+def enroll_ping():
+    """Wizard keep-alive — get() touches last_activity, so an open wizard
+    never idles out; expiry only reaps abandoned sessions."""
+    if _enroll_sessions.get(request.form.get("session") or "") is None:
+        return jsonify(dict(_EXPIRED)), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/enroll/finish", methods=["POST"])
+def enroll_finish():
+    from config import ENROLL_MIN_ACCEPTED
+
+    sid = request.form.get("session") or ""
+    s = _enroll_sessions.get(sid)
+    if s is None:
+        return jsonify(dict(_EXPIRED)), 404
+
+    # Directional floor: lateral (yaw) diversity is required. The session
+    # stays alive on 422 so the wizard can retake just the missing poses.
+    missing = s.missing_required()
+    if missing:
+        return jsonify({"ok": False, "accepted": s.accepted,
+                        "error": "missing required poses: " + ", ".join(missing),
+                        }), 422
+    if s.accepted < ENROLL_MIN_ACCEPTED:
+        return jsonify({"ok": False, "accepted": s.accepted,
+                        "error": (f"only {s.accepted} usable captures "
+                                  f"(need {ENROLL_MIN_ACCEPTED})")}), 422
+
+    _enroll_sessions.end(sid)   # release the camera before the heavy save
+    clf = _get_classifier(_runner_ref())
+    names = _finish_enrollment(clf, s.name, s.embeddings())
+    event_log.emit("info", "ENROLL",
+                   f'"{s.name}" authorized ({s.accepted} guided captures)')
+    return jsonify({"ok": True, "name": s.name, "accepted": s.accepted,
+                    "identities": names})
+
+
+@app.route("/enroll/cancel", methods=["POST"])
+def enroll_cancel():
+    s = _enroll_sessions.end(request.form.get("session") or "")
+    if s is not None:
+        event_log.emit("info", "ENROLL",
+                       f'capture for "{s.name}" cancelled '
+                       f"({s.accepted} shots discarded)")
+    return ("", 204)
+
+
+@app.route("/logs")
+def logs():
+    """System Log window feed. `since` is the client's cursor (last seen seq);
+    `latest` is the next cursor even when no new events matched."""
+    since = request.args.get("since", default=0, type=int)
+    events, latest = event_log.since(since)
+    return jsonify({"events": events, "latest": latest})
 
 
 @app.route("/state")
