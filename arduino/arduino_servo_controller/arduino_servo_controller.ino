@@ -15,7 +15,7 @@
 
 #define TIMEOUT_MS 500
 
-#define TILT_PIN 9
+#define TILT_PIN 11
 #define PAN_PIN 10
 #define TRIGGER_PIN 8
 #define LED_PIN 13

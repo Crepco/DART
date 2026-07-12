@@ -31,6 +31,11 @@
   // ── paint ──────────────────────────────────────────────────────────────────
   const sign = (n) => (n > 0 ? "+" : "") + n;
 
+  // feed corner readout: loop rate + face-auth classify latency (auth_ms is
+  // null until the classifier has run at least once)
+  const fmtFeedStats = (s) => s.fps.toFixed(1) + " FPS · " +
+    (s.auth_ms != null ? Math.round(s.auth_ms) + "ms AUTH" : "--ms AUTH");
+
   function setVal(id, text, state) {
     const el = $(id);
     el.textContent = text;
@@ -75,7 +80,34 @@
       banner.className = "feed-banner hidden";
     }
 
+    const stats = $("feedStats");
+    stats.classList.toggle("hidden", !streaming);
+    if (streaming) stats.textContent = fmtFeedStats(s);
+
+    paintFeedBox();
     $("liveDot").classList.toggle("on", streaming);
+  }
+
+  // keep --feed-ar (stream aspect ratio) and --feed-head (panel-head height)
+  // in sync so CSS can shrink-wrap the feed box to the video — survives
+  // camera hot-swaps mid-run, since each poll re-reads the frame size
+  let feedAr = 0, feedHead = 0;
+
+  function paintFeedBox() {
+    const stage = $("feedStage");
+    const img = $("video");
+    if (feedOn && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      const ar = img.naturalWidth / img.naturalHeight;
+      if (Math.abs(ar - feedAr) > 0.01) {
+        feedAr = ar;
+        stage.style.setProperty("--feed-ar", ar.toFixed(4));
+      }
+    }
+    const hh = document.querySelector(".feed-panel .panel-head").offsetHeight;
+    if (hh && hh !== feedHead) {
+      feedHead = hh;
+      stage.style.setProperty("--feed-head", hh + "px");
+    }
   }
 
   function paintTelemetry(s) {
@@ -401,6 +433,39 @@
     } catch (e) { /* state poll will show the truth */ }
   });
 
+  // ── collapsible sidebar panels (persisted) ─────────────────────────────────
+  const FOLD_KEY = "dart.folds";
+
+  // preserve log autoscroll across layout changes that resize .log-scroll
+  function withLogStick(mutate) {
+    const el = $("logScroll");
+    const stick = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+    mutate();
+    if (stick) el.scrollTop = el.scrollHeight;
+  }
+
+  function initFolds() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(FOLD_KEY)) || {}; } catch (e) {}
+    document.querySelectorAll(".fold-btn").forEach((btn) => {
+      const panel = $(btn.dataset.fold);
+      const apply = (folded) => {
+        panel.classList.toggle("folded", folded);
+        btn.setAttribute("aria-expanded", String(!folded));
+      };
+      // first visit: honor the panel's declared default; after that the
+      // user's saved choice wins
+      const sv = saved[btn.dataset.fold];
+      apply(sv === undefined ? btn.dataset.foldDefault === "folded" : sv === true);
+      btn.addEventListener("click", () => {
+        const folded = !panel.classList.contains("folded");
+        withLogStick(() => apply(folded));
+        saved[btn.dataset.fold] = folded;
+        try { localStorage.setItem(FOLD_KEY, JSON.stringify(saved)); } catch (e) {}
+      });
+    });
+  }
+
   // wizard callbacks
   window.DartDashboard = {
     refreshAuthorized,
@@ -409,6 +474,7 @@
   };
 
   // ── boot ──────────────────────────────────────────────────────────────────
+  initFolds();
   tick();
   pollLogs();
   refreshAuthorized();

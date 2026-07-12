@@ -27,38 +27,24 @@
 
     <main class="grid">
 
-      <!-- ── left column: camera feed + telemetry ── -->
+      <!-- ── left column: camera feed (the stage centers a panel that
+              shrink-wraps the video's real aspect ratio) ── -->
       <section class="col-main">
-        <div class="panel feed-panel">
-          <div class="panel-head">
-            <span class="panel-title">MAIN CAMERA FEED — REAL-TIME HEADS-UP DISPLAY (HUD)</span>
-            <span id="liveDot" class="live"><i class="dot"></i>LIVE</span>
-          </div>
-          <div class="feed-wrap">
-            <img id="video" alt="">
-            <div id="feedCover" class="feed-cover">
-              <div class="cover-reticle" aria-hidden="true"></div>
-              <div class="cover-title" id="coverTitle">SYSTEM OFFLINE</div>
-              <div class="cover-sub" id="coverSub">START TURRET TO ENGAGE FEED</div>
+        <div class="feed-stage" id="feedStage">
+          <div class="panel feed-panel">
+            <div class="panel-head">
+              <span class="panel-title">MAIN CAMERA FEED — REAL-TIME HEADS-UP DISPLAY (HUD)</span>
+              <span id="liveDot" class="live"><i class="dot"></i>LIVE</span>
             </div>
-            <div id="feedBanner" class="feed-banner hidden"></div>
-          </div>
-        </div>
-
-        <div class="panel telemetry">
-          <div class="panel-head"><span class="panel-title">TELEMETRY DASHBOARD</span></div>
-          <div class="tele-grid">
-            <div class="tele-rows">
-              <div class="trow"><span class="k">Loop Rate</span><span class="v" id="tFps">—</span></div>
-              <div class="trow"><span class="k">Target ID</span><span class="v" id="tTid">—</span></div>
-              <div class="trow"><span class="k">Error Vector</span><span class="v" id="tErr">—</span></div>
-              <div class="trow"><span class="k">Pan Duty</span><span class="v" id="tPan">—</span></div>
-              <div class="trow"><span class="k">Tilt Duty</span><span class="v" id="tTilt">—</span></div>
-            </div>
-            <div class="tele-graph">
-              <div class="graph-head"><span>LOOP RATE (FPS)</span><span class="v" id="gFps">—</span></div>
-              <canvas id="fpsGraph" width="320" height="72"></canvas>
-              <div class="graph-x"><span>-60s</span><span>-40s</span><span>-20s</span><span>Now</span></div>
+            <div class="feed-wrap">
+              <img id="video" alt="">
+              <div id="feedCover" class="feed-cover">
+                <div class="cover-reticle" aria-hidden="true"></div>
+                <div class="cover-title" id="coverTitle">SYSTEM OFFLINE</div>
+                <div class="cover-sub" id="coverSub">START TURRET TO ENGAGE FEED</div>
+              </div>
+              <div id="feedBanner" class="feed-banner hidden"></div>
+              <div id="feedStats" class="feed-stats hidden" aria-hidden="true"></div>
             </div>
           </div>
         </div>
@@ -66,9 +52,15 @@
 
       <!-- ── right sidebar ── -->
       <aside class="col-side">
-        <div class="panel">
-          <div class="panel-head"><span class="panel-title">AUTHORIZATION MANAGER</span></div>
-          <div class="pad auth-mgr">
+        <div class="panel" id="authPanel">
+          <div class="panel-head">
+            <span class="panel-title">AUTHORIZATION MANAGER</span>
+            <button class="fold-btn" type="button" data-fold="authPanel"
+                    data-fold-default="folded"
+                    aria-expanded="true" aria-controls="authBody"
+                    title="collapse / expand">&#9662;</button>
+          </div>
+          <div class="pad auth-mgr fold-body" id="authBody">
             <label class="field-label" for="authName">Name:</label>
             <input id="authName" class="auth-input" type="text" autocomplete="off"
                    spellcheck="false" placeholder="operator name">
@@ -87,11 +79,41 @@
           </div>
         </div>
 
-        <div class="panel">
-          <div class="panel-head"><span class="panel-title">ENROLLED DATABASE (PKL)</span></div>
-          <div class="pad">
+        <div class="panel" id="dbPanel">
+          <div class="panel-head">
+            <span class="panel-title">ENROLLED DATABASE (PKL)</span>
+            <button class="fold-btn" type="button" data-fold="dbPanel"
+                    data-fold-default="folded"
+                    aria-expanded="true" aria-controls="dbBody"
+                    title="collapse / expand">&#9662;</button>
+          </div>
+          <div class="pad fold-body" id="dbBody">
             <ol id="dbList" class="db-list"></ol>
             <div class="db-total">Total Enrolled: <span id="dbTotal">0</span></div>
+          </div>
+        </div>
+
+        <div class="panel telemetry" id="telePanel">
+          <div class="panel-head">
+            <span class="panel-title">TELEMETRY DASHBOARD</span>
+            <button class="fold-btn" type="button" data-fold="telePanel"
+                    data-fold-default="folded"
+                    aria-expanded="true" aria-controls="teleBody"
+                    title="collapse / expand">&#9662;</button>
+          </div>
+          <div class="tele-grid fold-body" id="teleBody">
+            <div class="tele-rows">
+              <div class="trow"><span class="k">Loop Rate</span><span class="v" id="tFps">—</span></div>
+              <div class="trow"><span class="k">Target ID</span><span class="v" id="tTid">—</span></div>
+              <div class="trow"><span class="k">Error Vector</span><span class="v" id="tErr">—</span></div>
+              <div class="trow"><span class="k">Pan Duty</span><span class="v" id="tPan">—</span></div>
+              <div class="trow"><span class="k">Tilt Duty</span><span class="v" id="tTilt">—</span></div>
+            </div>
+            <div class="tele-graph">
+              <div class="graph-head"><span>LOOP RATE (FPS)</span><span class="v" id="gFps">—</span></div>
+              <canvas id="fpsGraph" width="320" height="72"></canvas>
+              <div class="graph-x"><span>-60s</span><span>-40s</span><span>-20s</span><span>Now</span></div>
+            </div>
           </div>
         </div>
 

@@ -21,7 +21,7 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; min-height: 100%; }
+html, body { margin: 0; min-height: 100%; height: 100%; }
 body {
   background:
     radial-gradient(1400px 900px at 50% -20%, #0a1510 0%, var(--bg) 60%);
@@ -75,6 +75,42 @@ button:disabled { cursor: default; opacity: .45; }
 @media (max-width: 1020px) { .grid { grid-template-columns: 1fr; } }
 .col-main, .col-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
+/* ── viewport-locked layout: desktop windows tall enough to hold everything.
+      Below 1021px wide or 600px tall, the page-scroll layout above remains.
+      The min-height: 0 / minmax(0, 1fr) overrides are load-bearing: grid
+      tracks and flex items min-size to their content by default, so the
+      feed / log content would otherwise win over the viewport again. ── */
+@media (min-width: 1021px) and (min-height: 600px) {
+  body { overflow: hidden; }
+  .frame { height: 100vh; height: 100dvh; display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto; }  /* header / main / footer */
+  .grid { min-height: 0; grid-template-rows: minmax(0, 1fr);
+    align-items: stretch; }
+  .col-main, .col-side { min-height: 0; }
+
+  /* left column: the stage fills the row and centers a feed panel that
+     shrink-wraps the video (width from the stage's height x aspect ratio,
+     via container-query units — the panel border hugs the video) */
+  .feed-stage { flex: 1 1 auto; min-height: 0; container-type: size;
+    display: flex; align-items: center; justify-content: center; }
+  .feed-panel { display: flex; flex-direction: column; width: fit-content;
+    max-width: 100%; max-height: 100%; }
+  .feed-panel .panel-head { white-space: nowrap; }
+  .feed-wrap { min-height: 0;
+    width: min(100cqw,
+               (100cqh - var(--feed-head, 40px)) * var(--feed-ar, 1.3333)); }
+
+  /* sidebar: log absorbs slack; DB list + whole column overflow-guarded so
+     the page lock survives even when the sidebar content doesn't fit (768p) */
+  .col-side { overflow-y: auto; scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent; }
+  .col-side > .panel { flex: none; }
+  .col-side > .log-panel { flex: 1 1 auto; min-height: 0; }
+  .log-scroll { flex: 1 1 auto; height: auto; min-height: 72px; }
+  .db-list { max-height: 22vh; overflow-y: auto; scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent; }
+}
+
 /* ── feed ── */
 .live { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px;
   letter-spacing: .14em; color: var(--muted); }
@@ -84,9 +120,15 @@ button:disabled { cursor: default; opacity: .45; }
   animation: pulse 1.6s ease infinite; }
 @keyframes pulse { 50% { opacity: .45; } }
 
-.feed-wrap { position: relative; background: #000; aspect-ratio: 4 / 3;
+/* --feed-ar mirrors the stream's real aspect ratio (JS keeps it in sync from
+   the MJPEG frames), so the box always hugs the video — no letterbox bars */
+.feed-wrap { position: relative; background: #000;
+  aspect-ratio: var(--feed-ar, 1.3333);
   border-radius: 0 0 9px 9px; overflow: hidden; }
-.feed-wrap img { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* absolute: MJPEG frames change the img's intrinsic size continuously — kept
+   out of flow so the stream can never drive (or thrash) the panel's layout */
+.feed-wrap img { position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; }
 
 .feed-cover { position: absolute; inset: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: var(--s2); text-align: center;
@@ -120,10 +162,19 @@ button:disabled { cursor: default; opacity: .45; }
 .feed-banner.warn { color: var(--amber); border-color: #5a420f; }
 .feed-banner.err  { color: var(--red);   border-color: #5a2025; }
 
+/* live fps/latency readout — bottom-right, clear of the burned-in top status
+   bar and top-right fire label */
+.feed-stats { position: absolute; right: 10px; bottom: 8px; padding: 4px 10px;
+  background: rgba(5, 10, 7, .78); border: 1px solid var(--line);
+  border-radius: 6px; color: var(--green); font-size: 11.5px;
+  letter-spacing: .08em; white-space: nowrap; pointer-events: none; }
+
 /* ── telemetry ── */
 .tele-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px;
   gap: 4px 20px; padding: 8px 14px 12px; }
 @media (max-width: 720px) { .tele-grid { grid-template-columns: 1fr; } }
+/* in the sidebar the panel is ~340px wide: stack the graph under the rows */
+.col-side .tele-grid { grid-template-columns: 1fr; }
 .trow { display: flex; align-items: baseline; gap: var(--s3); padding: 6px 0;
   border-bottom: 1px dashed var(--line-soft); }
 .trow:last-child { border-bottom: 0; }
@@ -192,6 +243,17 @@ button:disabled { cursor: default; opacity: .45; }
 .db-list .none { color: var(--muted); list-style: none; margin-left: -3ch; }
 .db-total { color: var(--green); border-top: 1px dashed var(--line-soft);
   padding-top: 9px; font-size: 12.5px; letter-spacing: .04em; }
+
+/* ── collapsible sidebar panels ── */
+.fold-btn { background: none; border: 1px solid var(--line); color: var(--muted);
+  border-radius: 6px; width: 24px; height: 24px; padding: 0; flex: none;
+  font-size: 11px; line-height: 1; cursor: pointer;
+  transition: transform .15s ease, color .15s ease, border-color .15s ease; }
+.fold-btn:hover { color: var(--green); border-color: var(--green-dim); }
+.panel.folded .fold-btn { transform: rotate(-90deg); }
+.panel.folded .fold-body { display: none; }
+/* transparent (not 0) so the head's height doesn't jump 1px on toggle */
+.panel.folded .panel-head { border-bottom-color: transparent; }
 
 /* ── system log ── */
 .log-panel { display: flex; flex-direction: column; }
