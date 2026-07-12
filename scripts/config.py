@@ -53,8 +53,13 @@ TRACK_STATE_GRACE_S = 8.0   # seconds an unseen track keeps its auth verdict —
 TRACK_DEBUG = False         # True: log track-ID set changes (+id(conf) / -id)
 
 # ── Servo ──
-STOP_PAN    = 90
-STOP_TILT   = 90
+# Hardware-measured neutrals (calibrate_stop.py, 2026-07-12): write(90) creeps
+# on this build's CR servos — 87 holds both axes still (373s dead-still
+# verified). Re-run the calibration if a servo is swapped; the servo trim pot
+# is the fix if no integer degree holds (and would also cure the slow idle
+# creep while DART is stopped — the firmware failsafe parks at its own 90/90).
+STOP_PAN    = 87
+STOP_TILT   = 87
 MAX_SPEED   = 25
 INVERT_PAN  = -1
 INVERT_TILT = 1
