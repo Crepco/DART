@@ -81,6 +81,15 @@ PAN_KP,  PAN_KI,  PAN_KD  = 0.075, 0.0, 0.15
 TILT_KP, TILT_KI, TILT_KD = 0.04, 0.0, 0.09
 INTEGRAL_CLAMP = 10.0
 D_SMOOTH = 0.70     # derivative low-pass (weight on previous) — stops D-term amplifying detection noise
+D_KICK_LIMIT = 400.0  # px/s cap on the raw derivative input. A target-box jump
+                      # or deadband exit puts a one-frame error delta into the
+                      # derivative that reads as thousands of px/s — KD x that
+                      # saturates the command at MAX_SPEED for several frames
+                      # (D_SMOOTH memory). Genuine tracking rates are <~300 px/s;
+                      # a deadband exit (~35px in 65ms) reads ~540, but ~85% of
+                      # that is the deadband's hidden 30px reappearing at once,
+                      # not real motion — clamping it is deliberate. 400 keeps
+                      # real pursuit damping intact and de-fangs the spikes.
 
 # ── Smoothing ──
 # SMOOTH is the dominant measurement lag: tau ~ 1/(1-SMOOTH) frames. 0.90 meant

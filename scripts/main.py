@@ -181,6 +181,7 @@ def main():
     fire          = False
     lock_count    = 0
     locked        = False
+    pid_live      = False   # False across coast/lost frames -> resync on resume
 
     print("[INFO] Running — press Q to quit")
 
@@ -248,6 +249,15 @@ def main():
             if abs(error_y) < INPUT_DEADBAND:
                 error_y = 0.0
 
+            # Re-anchor the derivative after any gap: coast/lost frames freeze
+            # the PID (no update), so prev_error is stale — a derivative
+            # computed across the gap is fictitious and saturates the command
+            # (the hardware "lurch").
+            if not pid_live:
+                pid_pan.resync(error_x * INVERT_PAN)
+                pid_tilt.resync(error_y * INVERT_TILT)
+                pid_live = True
+
             pan_pid  = pid_pan.update(error_x  * INVERT_PAN,  dt, INTEGRAL_CLAMP)
             tilt_pid = pid_tilt.update(error_y * INVERT_TILT, dt, INTEGRAL_CLAMP)
 
@@ -263,6 +273,7 @@ def main():
             # the target is still tracked UNAUTHORIZED and HOLDS otherwise;
             # lock_count only resets in the lost branch below.
             no_body_count += 1
+            pid_live = False
             error_x = smooth_cx - cx_frame
             error_y = smooth_cy - cy_frame
             if locked_face_auth == "UNAUTHORIZED":
@@ -274,6 +285,7 @@ def main():
 
         else:
             no_body_count += 1
+            pid_live = False
             error_x = error_y = 0.0
             fire = False
             locked = False

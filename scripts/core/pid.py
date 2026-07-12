@@ -1,6 +1,7 @@
 import numpy as np
 
-from config import PAN_KP, PAN_KI, PAN_KD, TILT_KP, TILT_KI, TILT_KD, D_SMOOTH, INTEGRAL_CLAMP
+from config import (PAN_KP, PAN_KI, PAN_KD, TILT_KP, TILT_KI, TILT_KD,
+                    D_SMOOTH, D_KICK_LIMIT, INTEGRAL_CLAMP)
 
 
 class PID:
@@ -16,11 +17,25 @@ class PID:
         dt    = max(dt, 1e-6)
         i_lim = integral_clamp if integral_clamp is not None else self.limit
         self.integral = float(np.clip(self.integral + error * dt, -i_lim, i_lim))
-        raw_deriv       = (error - self.prev_error) / dt
+        # Kick clamp: a one-frame error jump (target-box switch, deadband exit)
+        # is mostly fictitious motion — unclamped it reads as thousands of px/s
+        # and KD x that pins the output at the limit for several frames via the
+        # d_smooth memory. Genuine tracking rates sit well under D_KICK_LIMIT.
+        raw_deriv = float(np.clip((error - self.prev_error) / dt,
+                                  -D_KICK_LIMIT, D_KICK_LIMIT))
         self.deriv      = self.d_smooth * self.deriv + (1.0 - self.d_smooth) * raw_deriv
         self.prev_error = error
         raw = self.kp * error + self.ki * self.integral + self.kd * self.deriv
         return float(np.clip(raw, -self.limit, self.limit))
+
+    def resync(self, error: float):
+        """Re-anchor after a tracking gap: update() wasn't called during the
+        gap, so prev_error/deriv reference pre-gap data — a derivative computed
+        across the gap is fictitious (the delta spans many frames, dt spans
+        one). The first post-gap update() is P-only; D rebuilds over ~2-3
+        frames."""
+        self.prev_error = error
+        self.deriv      = 0.0
 
     def reset(self):
         self.integral   = 0.0

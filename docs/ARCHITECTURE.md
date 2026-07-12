@@ -108,6 +108,19 @@ Stages, in order:
      raise KD before lowering KP if it still rings).
    - **Filtered derivative** (`D_SMOOTH = 0.70`): the raw derivative amplifies detection
      noise into command spikes on a velocity-commanded servo; the D term is low-passed.
+   - **Derivative-kick clamp** (`D_KICK_LIMIT = 400 px/s`, applied to the raw derivative
+     input before smoothing): a one-frame error jump — a target-box switch, or a deadband
+     exit where the hidden ≤30 px reappears at once — reads as thousands of px/s of
+     fictitious motion; `KD ×` that pinned the command at `MAX_SPEED` for 3–8 frames (the
+     `D_SMOOTH` memory) in hardware logs. Genuine pursuit rates are < ~300 px/s and pass
+     untouched.
+   - **Gap resync** (`PID.resync()`, called by both loops when tracking resumes): coast
+     and lost frames don't call `update()`, so `prev_error` goes stale; a derivative
+     computed across the gap divides a many-frame delta by a one-frame `dt` and lurches
+     the turret on re-acquisition. Resync re-anchors `prev_error` to the current error
+     and clears the derivative memory — the first post-gap frame is P-only, D rebuilds
+     over ~2–3 frames. Fires after *every* gap (even 1-frame flickers): the cross-gap
+     derivative is invalid by construction, and the cost is one P-only frame.
    - **KI = 0 on purpose**: at 0.001 the clamped integral contributed ≤ 0.01 units while
      remaining a windup liability. Tradeoff: nothing corrects steady-state bias — if a
      persistent small-angle offset appears, restore a small KI (0.001–0.005) rather than

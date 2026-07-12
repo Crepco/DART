@@ -287,6 +287,7 @@ class DartRunner:
         fire = locked = False
         lock_count = 0
         fps = 0.0
+        pid_live = False   # False across coast/lost frames -> resync on resume
 
         # ── event-capture state (logging only — diff-based so core/auth stay
         # untouched; the loop already receives every per-frame value) ──
@@ -365,6 +366,15 @@ class DartRunner:
                 if abs(error_y) < INPUT_DEADBAND:
                     error_y = 0.0
 
+                # Re-anchor the derivative after any gap: coast/lost frames
+                # freeze the PID (no update), so prev_error is stale — a
+                # derivative computed across the gap is fictitious and
+                # saturates the command (the hardware "lurch").
+                if not pid_live:
+                    pid_pan.resync(error_x * INVERT_PAN)
+                    pid_tilt.resync(error_y * INVERT_TILT)
+                    pid_live = True
+
                 pan_pid  = pid_pan.update(error_x  * INVERT_PAN,  dt, INTEGRAL_CLAMP)
                 tilt_pid = pid_tilt.update(error_y * INVERT_TILT, dt, INTEGRAL_CLAMP)
                 pan_raw  = apply_output_deadband(pan_pid,  OUTPUT_DEADBAND)
@@ -373,6 +383,7 @@ class DartRunner:
 
             elif smooth_cx is not None and no_body_count < FIRE_COAST_FRAMES:
                 no_body_count += 1
+                pid_live = False
                 error_x = smooth_cx - cx_frame
                 error_y = smooth_cy - cy_frame
                 fire, lock_count, locked = fire_gate(error_x, error_y, fire, lock_count)
@@ -381,6 +392,7 @@ class DartRunner:
 
             else:
                 no_body_count += 1
+                pid_live = False
                 error_x = error_y = 0.0
                 fire = locked = False
                 lock_count = 0
