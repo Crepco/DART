@@ -375,6 +375,17 @@ class DartRunner:
                     pid_tilt.resync(error_y * INVERT_TILT)
                     pid_live = True
 
+                # Deadband crossings are the same class of discontinuity as
+                # detection gaps: entering hides up to INPUT_DEADBAND px in one
+                # frame, exiting reveals it — either edge writes a fictitious
+                # step into the derivative (measured: entry pinned pan at -25
+                # for ~1s with the target centered). Re-anchor per axis;
+                # D_KICK_LIMIT still guards mid-track box jumps.
+                if (error_x == 0.0) != (pid_pan.prev_error == 0.0):
+                    pid_pan.resync(error_x * INVERT_PAN)
+                if (error_y == 0.0) != (pid_tilt.prev_error == 0.0):
+                    pid_tilt.resync(error_y * INVERT_TILT)
+
                 pan_pid  = pid_pan.update(error_x  * INVERT_PAN,  dt, INTEGRAL_CLAMP)
                 tilt_pid = pid_tilt.update(error_y * INVERT_TILT, dt, INTEGRAL_CLAMP)
                 pan_raw  = apply_output_deadband(pan_pid,  OUTPUT_DEADBAND)

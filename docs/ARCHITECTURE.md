@@ -109,11 +109,11 @@ Stages, in order:
    - **Filtered derivative** (`D_SMOOTH = 0.70`): the raw derivative amplifies detection
      noise into command spikes on a velocity-commanded servo; the D term is low-passed.
    - **Derivative-kick clamp** (`D_KICK_LIMIT = 400 px/s`, applied to the raw derivative
-     input before smoothing): a one-frame error jump — a target-box switch, or a deadband
-     exit where the hidden ≤30 px reappears at once — reads as thousands of px/s of
-     fictitious motion; `KD ×` that pinned the command at `MAX_SPEED` for 3–8 frames (the
-     `D_SMOOTH` memory) in hardware logs. Genuine pursuit rates are < ~300 px/s and pass
-     untouched.
+     input before smoothing): a one-frame error jump from a mid-track target-box switch
+     or detection wobble reads as thousands of px/s of fictitious motion; `KD ×` that
+     pinned the command at `MAX_SPEED` for 3–8 frames (the `D_SMOOTH` memory) in hardware
+     logs. Typical pursuit rates pass untouched (measured p99 ≈ 560 px/s at 15 fps, so
+     only the fastest ~1% of genuine transients get softened D).
    - **Gap resync** (`PID.resync()`, called by both loops when tracking resumes): coast
      and lost frames don't call `update()`, so `prev_error` goes stale; a derivative
      computed across the gap divides a many-frame delta by a one-frame `dt` and lurches
@@ -121,6 +121,13 @@ Stages, in order:
      and clears the derivative memory — the first post-gap frame is P-only, D rebuilds
      over ~2–3 frames. Fires after *every* gap (even 1-frame flickers): the cross-gap
      derivative is invalid by construction, and the cost is one P-only frame.
+   - **Deadband-crossing resync** (per axis, same `PID.resync()`): crossing the
+     `INPUT_DEADBAND` boundary is the same class of discontinuity, hit while the PID
+     stays live — entering hides up to 30 px in one frame (hardware logs showed the
+     command pinned at −25 *at zero error*, sweeping the turret for ~1 s after it had
+     settled), and exiting reveals the hidden step all at once. Both loops re-anchor
+     whichever axis crossed: entry yields a true zero command the frame the target
+     centres; exit is P-only for one frame, exactly like a gap resume.
    - **KI = 0 on purpose**: at 0.001 the clamped integral contributed ≤ 0.01 units while
      remaining a windup liability. Tradeoff: nothing corrects steady-state bias — if a
      persistent small-angle offset appears, restore a small KI (0.001–0.005) rather than

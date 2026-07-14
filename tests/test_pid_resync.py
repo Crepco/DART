@@ -5,7 +5,14 @@ call), so prev_error goes stale at the last big error; the first post-gap
 update computes a fictitious multi-thousand-px/s derivative and pins the
 command at MAX_SPEED for several frames (D_SMOOTH memory keeps it there).
 resync() re-anchors on tracking resume; D_KICK_LIMIT caps one-frame error
-jumps that never pass through a gap (target-box switch, deadband exit).
+jumps that never pass through a gap (target-box switch).
+
+Round-3 forensics found the second discontinuity in the same class: crossing
+the INPUT_DEADBAND boundary while tracking stays live. Entering hides up to
+30 px in one frame (the loops resync so a centered target gets a true zero
+command); exiting reveals it (resync makes the first frame P-only, same as a
+gap resume). The loops re-anchor per axis on any crossing — the entry/exit
+tests below pin the mechanics those call sites rely on.
 """
 
 import pytest
@@ -62,6 +69,39 @@ def test_resync_reanchors_but_is_not_reset():
     assert pid.prev_error == -42.0
     assert pid.deriv == 0.0
     assert pid.integral == integral_before      # unlike reset(): I-state survives
+
+
+def test_defect_deadband_entry_kick_without_resync():
+    # Pin the round-3 defect: the error collapses into the deadband (err -> 0
+    # in one frame, target centered) and a plain update(0) still emits a real
+    # command from the fake derivative — hardware showed pan pinned at -25
+    # with zero error, sweeping the turret ~1s after settling.
+    pid = tracked_pid(err=40.0)
+    out = pid.update(0.0, DT)                   # deadband entry, no resync
+    assert abs(out) > 10.0                      # command with ZERO error
+
+
+def test_entry_resync_gives_true_zero_at_rest():
+    pid = tracked_pid(err=40.0)
+    pid.resync(0.0)                             # loop resyncs on the crossing
+    assert pid.update(0.0, DT) == pytest.approx(0.0)
+    assert pid.update(0.0, DT) == pytest.approx(0.0)   # stays zero in-band
+
+
+def test_exit_resync_p_only_then_clamped_d_engages():
+    # Deadband exit: frame 1 is P-only (resync ate the hidden ~30px step);
+    # frame 2's genuine fast motion re-engages D, still bounded by
+    # D_KICK_LIMIT — the two mechanisms compose on consecutive frames.
+    pid = PID(KP, 0.0, KD, LIMIT)
+    for _ in range(5):
+        pid.update(0.0, DT)                     # resting inside the deadband
+    pid.resync(35.0)                            # loop resyncs on the crossing
+    assert pid.update(35.0, DT) == pytest.approx(KP * 35.0)
+    # 35 -> 80 px in one frame = 675 px/s, beyond the 400 px/s clamp
+    out2 = pid.update(80.0, DT)
+    expect_d = KD * (0.3 * pid_mod.D_KICK_LIMIT)        # D_SMOOTH=0.70 mix
+    assert out2 == pytest.approx(KP * 80.0 + expect_d)
+    assert abs(out2) < LIMIT                    # engaged, not saturated
 
 
 def test_clamp_transparent_for_genuine_motion(monkeypatch):
