@@ -12,7 +12,7 @@ import serial
 
 from config import *
 from core import CameraStream, YOLODetector, PID, build_command, send_stop
-from core.detector import select_face
+from core.targeting import AimSelector
 from core.pid import asym_ema, slew_step
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -125,7 +125,7 @@ def main():
     face_path = args.face_model if os.path.exists(args.face_model) else None
     detector  = YOLODetector(args.person_model, face_path)
 
-    pid_pan  = PID(PAN_KP,  PAN_KI,  PAN_KD,  MAX_SPEED)
+    pid_pan  = PID(PAN_KP,  PAN_KI,  PAN_KD,  PAN_MAX_SPEED)
     pid_tilt = PID(TILT_KP, TILT_KI, TILT_KD, MAX_SPEED)
 
     ser = None
@@ -182,6 +182,7 @@ def main():
     lock_count    = 0
     locked        = False
     pid_live      = False   # False across coast/lost frames -> resync on resume
+    aim_sel       = AimSelector()   # face aim w/ head-proxy fallback (per-lock)
 
     print("[INFO] Running — press Q to quit")
 
@@ -222,13 +223,13 @@ def main():
         tilt_pid = 0.0
         status   = "NO BODY"
 
-        target_box = select_face(faces, smooth_cx, smooth_cy)
+        # Aim at the locked person: face when visible, offset-corrected head
+        # proxy otherwise — a face gap no longer stalls pursuit.
+        aim = aim_sel.select(faces, person_box, track_id, smooth_cx, smooth_cy)
 
-        if target_box is not None and person_box is not None:
+        if aim is not None:
             no_body_count = 0
-            x1, y1, x2, y2 = target_box
-            raw_cx = (x1 + x2) // 2
-            raw_cy = (y1 + y2) // 2
+            raw_cx, raw_cy = aim
 
             if smooth_cx is None:
                 smooth_cx = float(raw_cx)

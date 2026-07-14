@@ -1,5 +1,4 @@
 import copy
-import math
 import os
 import threading
 import time
@@ -9,8 +8,11 @@ import torch
 from ultralytics import YOLO
 
 from config import (CAM_HEIGHT, CAM_WIDTH, PERSON_CONF, FACE_CONF,
-                    TRACK_CONF, TRACKER_CONFIG, TRACK_DEBUG)
+                    TARGET_HOLD_CONF, TRACK_CONF, TRACKER_CONFIG, TRACK_DEBUG)
 from auth import FaceClassifier, TrackManager
+from .targeting import AimSelector, resolve_lock, select_face  # noqa: F401 —
+#   select_face/AimSelector re-exported: the loops and older imports pull the
+#   targeting helpers through core.detector
 
 # Run YOLO on the GPU when available; falls back to CPU transparently.
 DEVICE = 0 if torch.cuda.is_available() else "cpu"
@@ -126,6 +128,9 @@ class YOLODetector:
 
     def _run(self):
         locked_id = None
+        hold_started = None         # monotonic start of the current conf-dip hold
+        prev_held = False
+        prev_hold_tid = None
         prev_tracked: set = set()   # for TRACK_DEBUG id-change logging
 
         while not self._stopped:
@@ -162,7 +167,9 @@ class YOLODetector:
             h_f, w_f = frame.shape[:2]
 
             r = p_results[0]
-            tracked = {}   # every id ByteTrack reports this frame -> det conf
+            tracked = {}       # every id ByteTrack reports this frame -> det conf
+            boxes_by_id = {}   # ...and its box, incl. sub-PERSON_CONF dips —
+                               # the conf-dip hold below targets these
             # boxes.id is None when the tracker activated nothing this frame —
             # the results are then raw unmatched detections (mostly sub-threshold
             # noise at TRACK_CONF). No identity -> nothing to show or track;
@@ -173,11 +180,13 @@ class YOLODetector:
 
                 for box, tid, conf in zip(r.boxes.xyxy.cpu().tolist(), ids, confs):
                     tracked[tid] = conf
-                    # TRACK_CONF..PERSON_CONF dets exist only to keep ByteTrack's
-                    # identity alive through dips — hidden from HUD/targeting.
+                    x1, y1, x2, y2 = [int(v) for v in box]
+                    boxes_by_id[tid] = (x1, y1, x2, y2)
+                    # TRACK_CONF..PERSON_CONF dets keep ByteTrack's identity
+                    # alive through dips — hidden from HUD/targeting unless the
+                    # conf-dip hold re-surfaces the locked one below.
                     if conf < PERSON_CONF:
                         continue
-                    x1, y1, x2, y2 = [int(v) for v in box]
                     all_persons.append((x1, y1, x2, y2, tid))
 
             if TRACK_DEBUG:
@@ -193,55 +202,72 @@ class YOLODetector:
             # starts once ByteTrack itself loses the track.
             self._track_manager.cleanup(tracked.keys())
 
-            if all_persons:
-                current_ids = [p[4] for p in all_persons]
+            # Apply any finished async classification. Accept it for any id the
+            # tracker still knows (even conf-dipped, even with nothing displayed
+            # this frame), so a verdict that finished during a dip isn't discarded.
+            res = self._worker.poll()
+            if res is not None and res[0] in tracked:
+                self._track_manager.update_status(res[0], res[1])
 
-                # Apply any finished async classification. Accept it for any id
-                # the tracker still knows (even conf-dipped), so a verdict that
-                # finished during a dip isn't discarded.
-                res = self._worker.poll()
-                if res is not None and res[0] in tracked:
-                    self._track_manager.update_status(res[0], res[1])
+            # Tick every displayed track; collect those due for (re)classification.
+            due = []
+            for (x1, y1, x2, y2, tid) in all_persons:
+                self._track_manager.tick(tid)
+                if self._track_manager.should_classify(tid):
+                    due.append((tid, (x1, y1, x2, y2)))
 
-                # Tick every track; collect those due for (re)classification.
-                due = []
-                for (x1, y1, x2, y2, tid) in all_persons:
-                    self._track_manager.tick(tid)
-                    if self._track_manager.should_classify(tid):
-                        due.append((tid, (x1, y1, x2, y2)))
+            # Target selection: only confirmed-UNAUTHORIZED persons are targets
+            # (none -> resolve_lock may still HOLD the previous one through a
+            # conf dip). With several, lock the largest bbox (nearest the
+            # camera) — deterministic, so no target oscillation.
+            candidates = [(x1, y1, x2, y2, tid)
+                          for (x1, y1, x2, y2, tid) in all_persons
+                          if self._track_manager.get_status(tid) == "UNAUTHORIZED"]
+            prev_verdict = (self._track_manager.get_status(locked_id)
+                            if locked_id is not None else "UNKNOWN")
+            locked_id, held, hold_started = resolve_lock(
+                locked_id, prev_verdict, candidates, tracked,
+                time.monotonic(), hold_started)
 
-                auth_statuses = {tid: self._track_manager.get_status(tid)
-                                 for tid in current_ids}
+            if held:
+                # Conf-dip hold: surface the real (sub-PERSON_CONF) box so the
+                # HUD bracket, /state n_persons and event timing don't flicker
+                # while the turret keeps aiming at it.
+                all_persons.append((*boxes_by_id[locked_id], locked_id))
 
-                # Stateless target selection: only confirmed-UNAUTHORIZED persons
-                # are targets (none -> hold). With several, lock the largest bbox
-                # (nearest the camera) — deterministic, so no target oscillation.
-                candidates = [(x1, y1, x2, y2, tid)
-                              for (x1, y1, x2, y2, tid) in all_persons
-                              if self._track_manager.get_status(tid) == "UNAUTHORIZED"]
-                if not candidates:
-                    locked_id = None
-                elif len(candidates) == 1:
-                    locked_id = candidates[0][4]
-                else:
-                    locked_id = max(candidates,
-                                    key=lambda p: (p[2] - p[0]) * (p[3] - p[1]))[4]
+            if TRACK_DEBUG:
+                if held and not prev_held:
+                    print(f"[TRACK] hold start {locked_id} "
+                          f"conf={tracked.get(locked_id, 0.0):.2f}")
+                elif prev_held and not held:
+                    if locked_id is not None:
+                        why = ("returned" if locked_id == prev_hold_tid
+                               else "superseded")
+                    elif tracked.get(prev_hold_tid, 0.0) >= TARGET_HOLD_CONF:
+                        why = "expired"
+                    else:
+                        why = "lost"
+                    print(f"[TRACK] hold end {prev_hold_tid} ({why})")
+            prev_held = held
+            if held:
+                prev_hold_tid = locked_id
 
-                # Hand one crop to the worker if it's free — prioritise the target.
-                if due and self._worker.is_idle():
-                    tid, (x1, y1, x2, y2) = next((d for d in due if d[0] == locked_id), due[0])
-                    x1c, y1c = max(0, x1), max(0, y1)
-                    x2c, y2c = min(w_f, x2), min(h_f, y2)
-                    crop = frame[y1c:y2c, x1c:x2c].copy()
-                    self._worker.submit(tid, crop)
+            auth_statuses = {tid: self._track_manager.get_status(tid)
+                             for tid in (p[4] for p in all_persons)}
 
-                for (x1, y1, x2, y2, tid) in all_persons:
-                    if tid == locked_id:
-                        person_box = (x1, y1, x2, y2)
-                        track_id   = tid
-                        break
-            else:
-                locked_id = None
+            # Hand one crop to the worker if it's free — prioritise the target.
+            if due and self._worker.is_idle():
+                tid, (x1, y1, x2, y2) = next((d for d in due if d[0] == locked_id), due[0])
+                x1c, y1c = max(0, x1), max(0, y1)
+                x2c, y2c = min(w_f, x2), min(h_f, y2)
+                crop = frame[y1c:y2c, x1c:x2c].copy()
+                self._worker.submit(tid, crop)
+
+            for (x1, y1, x2, y2, tid) in all_persons:
+                if tid == locked_id:
+                    person_box = (x1, y1, x2, y2)
+                    track_id   = tid
+                    break
 
             faces = []
             if self._face_model is not None:
@@ -270,20 +296,3 @@ class YOLODetector:
                     "locked_face_auth": locked_face_auth,
                 }
 
-
-def select_face(faces: list, prev_cx, prev_cy):
-    """Pick the face nearest the previous anchor (area minus distance). If no
-    anchor yet, pick the largest face. Prevents frame-to-frame target hopping."""
-    if not faces:
-        return None
-    if prev_cx is None:
-        return max(faces, key=lambda f: (f[2] - f[0]) * (f[3] - f[1]))
-
-    def score(f):
-        x1, y1, x2, y2 = f
-        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-        area = (x2 - x1) * (y2 - y1)
-        dist = math.hypot(cx - prev_cx, cy - prev_cy)
-        return area - dist * 0.4
-
-    return max(faces, key=score)

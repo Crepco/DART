@@ -20,7 +20,7 @@ import cv2
 
 from config import *  # noqa: F401,F403  (camera/servo/PID/serial/colour constants)
 from core import CameraStream, YOLODetector, PID
-from core.detector import select_face
+from core.targeting import AimSelector
 from core.pid import asym_ema, slew_step
 from main import update_fire_state, apply_output_deadband, AUTH_COLS
 
@@ -257,7 +257,7 @@ class DartRunner:
         detector = YOLODetector(PERSON_MODEL, face_path)
         self.detector = detector
 
-        pid_pan  = PID(PAN_KP,  PAN_KI,  PAN_KD,  MAX_SPEED)
+        pid_pan  = PID(PAN_KP,  PAN_KI,  PAN_KD,  PAN_MAX_SPEED)
         pid_tilt = PID(TILT_KP, TILT_KI, TILT_KD, MAX_SPEED)
 
         self.link = SerialLink(self.port, BAUD_RATE)
@@ -288,6 +288,7 @@ class DartRunner:
         lock_count = 0
         fps = 0.0
         pid_live = False   # False across coast/lost frames -> resync on resume
+        aim_sel = AimSelector()   # face aim w/ head-proxy fallback (per-lock state)
 
         # ── event-capture state (logging only — diff-based so core/auth stay
         # untouched; the loop already receives every per-frame value) ──
@@ -345,12 +346,14 @@ class DartRunner:
             pan_raw = tilt_raw = 0.0
             pan_pid = tilt_pid = 0.0
             status  = "NO BODY"
-            target_box = select_face(faces, smooth_cx, smooth_cy)
+            # Aim at the locked person: face when visible, offset-corrected
+            # head proxy otherwise — a face gap no longer stalls pursuit.
+            aim = aim_sel.select(faces, det["person_box"], track_id,
+                                 smooth_cx, smooth_cy)
 
-            if target_box is not None and det["person_box"] is not None:
+            if aim is not None:
                 no_body_count = 0
-                x1, y1, x2, y2 = target_box
-                raw_cx, raw_cy = (x1 + x2) // 2, (y1 + y2) // 2
+                raw_cx, raw_cy = aim
                 if smooth_cx is None:
                     smooth_cx, smooth_cy = float(raw_cx), float(raw_cy)
                 else:

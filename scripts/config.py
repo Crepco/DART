@@ -50,7 +50,44 @@ TRACKER_CONFIG = str(SCRIPT_DIR / "bytetrack_dart.yaml")   # tuned thresholds + 
 TRACK_STATE_GRACE_S = 8.0   # seconds an unseen track keeps its auth verdict —
                             # time-based (not frames) so it doesn't shrink with fps;
                             # sized to outlive track_buffer at both fps extremes
-TRACK_DEBUG = False         # True: log track-ID set changes (+id(conf) / -id)
+TRACK_DEBUG = True          # TEMP: round-4 pursuit validation — revert before commit
+
+# ── Targeting continuity (round 4) ──
+# Round-3b forensics: pursuit was stop-start because a conf dip below
+# PERSON_CONF unlocked a target ByteTrack never actually dropped ("the box
+# disappears but the ID stays"), and aiming required a face box EVERY frame.
+# An existing lock now survives dips and face gaps; fresh locks still need
+# full PERSON_CONF + a confirmed UNAUTHORIZED verdict.
+TARGET_HOLD_CONF  = 0.2   # keep an existing lock while ByteTrack still reports
+                          # it at >= this conf (between TRACK_CONF 0.1 and
+                          # PERSON_CONF 0.45) — applies ONLY to the already-
+                          # locked id, never to acquiring one
+TARGET_HOLD_MAX_S = 2.0   # hold cap: bounds how long low-conf detections may
+                          # steer the turret before the coast path takes over
+                          # (time-based like TRACK_STATE_GRACE_S; must stay
+                          # well under that 8 s so the verdict outlives holds)
+HEAD_PROXY_FRAC   = 0.18  # faceless aim fallback: head sits ~this fraction of
+                          # box height below the top of a standing person's
+                          # box; the offset learned while a face WAS visible
+                          # corrects this prior per lock (see AimSelector)
+AIM_REACQUIRE_FRAMES = 3  # consecutive frames a face must be present after a
+                          # face gap before the aim may move back to it. The
+                          # round-4e feedback loop: pan motion blurs the face
+                          # away -> a SINGLE flickery re-detection triggered a
+                          # full-speed correction -> that motion caused the
+                          # next loss (measured 0.46-0.92s cycles). Flickers
+                          # shorter than this window never move the aim (the
+                          # anchored proxy holds); real regains start ~0.2s
+                          # late, imperceptible.
+AIM_STEP_LIMIT    = 45.0  # px/frame cap on aim-point movement within one lock
+                          # (~675 px/s at 15 fps, above the p95 genuine target
+                          # rate of ~400 px/s). Round-4b measured proxy->face
+                          # returns stepping the aim 100-375 px in ONE frame
+                          # after long face gaps (the box-derived proxy drifts
+                          # from the true head during motion) — the PID slammed
+                          # to the rail chasing the teleport, which read as
+                          # overshoot. A capped ramp corrects the same distance
+                          # smoothly; real pursuit motion is never clamped.
 
 # ── Servo ──
 # Hardware-measured neutrals (calibrate_stop.py, 2026-07-12): write(90) creeps
@@ -59,8 +96,14 @@ TRACK_DEBUG = False         # True: log track-ID set changes (+id(conf) / -id)
 # is the fix if no integer degree holds (and would also cure the slow idle
 # creep while DART is stopped — the firmware failsafe parks at its own 90/90).
 STOP_PAN    = 87
-STOP_TILT   = 87
-MAX_SPEED   = 25
+STOP_TILT   = 90
+MAX_SPEED   = 25    # serial/firmware safety clamp (build_command), both axes
+PAN_MAX_SPEED = 18  # pan PID output cap (< MAX_SPEED). Round-4 measured: the
+                    # track-loss rate is 6-8x the parked baseline while the pan
+                    # slews (motion blur at dim-light exposure), and every
+                    # dropout/aim artifact concentrated in saturated 25-unit
+                    # chases. Trades top-end pursuit speed for detection
+                    # continuity; sweep 20/18/16 on hardware if pursuit lags.
 INVERT_PAN  = -1
 INVERT_TILT = 1
 
@@ -119,7 +162,8 @@ SLEW_BRAKE_MULT = 3.0   # braking (command magnitude decreasing) may slew this m
                         # 2/3/4 on hardware with CONTROL_DEBUG on.
 
 # ── Control debug ──
-CONTROL_DEBUG = False   # True: print per-frame err/pid/ema/slew/cmd for both axes
+CONTROL_DEBUG = True    # TEMP: round-4 pursuit validation — revert before commit
+                        # True: print per-frame err/pid/ema/slew/cmd for both axes
                         # (compare raw PID vs post-slew at the overshoot moment)
 
 # ── Serial ──

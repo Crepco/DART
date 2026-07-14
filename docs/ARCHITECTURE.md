@@ -83,12 +83,63 @@ Four threads keep the control loop responsive and decoupled from model latency:
 
 ## Target selection
 
-Stateless per frame: only **confirmed-UNAUTHORIZED** persons are valid targets — none
-means hold (the turret waits rather than chasing UNKNOWN/AUTHORIZED tracks). With several
-candidates it locks the largest bbox (nearest the camera), which is deterministic and so
-doesn't oscillate. The aim point is the face nearest the previous smoothed centroid
-(`select_face`: score = area − 0.4·distance; largest face when no anchor yet), preventing
-frame-to-frame face hopping.
+Acquisition is stateless per frame: only **confirmed-UNAUTHORIZED** persons at full
+`PERSON_CONF` are valid candidates — none means hold (the turret waits rather than
+chasing UNKNOWN/AUTHORIZED tracks). With several candidates it locks the largest bbox
+(nearest the camera), which is deterministic and so doesn't oscillate — and deliberately
+still wins over a held lock (below): a clearly-visible unauthorized person beats a
+low-conf box.
+
+**Conf-dip hold** (`resolve_lock`, `core/targeting.py`): an *existing* lock survives
+detection-confidence dips. Round-3b forensics showed pursuit was stop-start because a
+dip below `PERSON_CONF` unlocked a target ByteTrack never actually dropped ("the box
+disappears but the ID stays") — the loss rate was 6.6× baseline at fast pan (motion
+blur), i.e. exactly mid-pursuit. The lock now persists while ByteTrack still reports
+the id at ≥ `TARGET_HOLD_CONF` (0.2), its persisted verdict is still UNAUTHORIZED
+(enrollment resets release the lock), and the hold is younger than `TARGET_HOLD_MAX_S`
+(2 s) — bounded, so stale low-conf boxes can never steer indefinitely. Held boxes are
+re-surfaced into `all_persons` so the HUD bracket and `/state` don't flicker either.
+`TRACK_DEBUG` logs `hold start/end (returned|superseded|expired|lost)` markers.
+
+**Aim point** (`AimSelector`, `core/targeting.py`): only faces **inside the locked
+person's box** (inflated by half its size) may steer the aim — a false positive or
+bystander across the frame is invisible to aiming (round-4c hardware: an
+area-dominant global pick let big spurious detections walk the aim 100–270 px/frame,
+the visible "circle shifts rapidly" defect). Among the person's own faces the one
+nearest the previous aim point wins (continuity beats size; the largest face only
+seeds the first frame). When the face drops — faces flap far more than person boxes
+in dim light — the aim falls back to the
+person box's head proxy (`HEAD_PROXY_FRAC` down from the box top) **corrected by the
+face-minus-proxy offset EMA-learned while the face was visible** (only from faces
+inside the locked box, so a bystander can't poison it). On the handoff frame the
+offset is additionally **re-based against that frame's box** (gated to the box
+inflated by half its size): a held low-conf box is often blur-distorted, and applying
+an offset learned on the old geometry teleported the aim 112 px on hardware — the
+turret chased it past the target. With the anchor the handoff is jump-free by
+construction whatever the box does, so face flapping cannot oscillate the aim;
+`D_KICK_LIMIT` remains as backstop only. A face gap therefore no longer stalls
+pursuit; the coast branch now bridges only true ByteTrack losses and hold expiries.
+Aim state never crosses a lock change. Finally the aim is **rate-limited within a
+lock** (`AIM_STEP_LIMIT`, 45 px/frame ≈ 675 px/s > p95 genuine motion): after a long
+face gap the drifted proxy's correction back onto the returning face measured
+100–375 px in ONE frame on hardware — the PID chased the teleport at the rail
+(perceived overshoot). A capped ramp covers the same correction smoothly; no aim
+source can step the turret's target faster than physics.
+
+**Re-acquisition confirmation** (`AIM_REACQUIRE_FRAMES`, 3): the pan's own motion
+blurs the face away, and reacting to the FIRST re-detected frame fired a full-speed
+correction whose motion caused the next loss — a self-sustaining 0.46–0.92 s
+lose→correct→lose cycle (round-4e logs; face-loss rate is ~6× the parked baseline
+at ANY nonzero pan speed in dim light, so speed-capping alone cannot break the
+loop). After a face gap the aim holds the anchored proxy until the face survives
+3 consecutive frames; flickers never move the aim, genuine regains start ~0.2 s
+late.
+
+**Pan speed cap**: the pan PID is limited to `PAN_MAX_SPEED` (18) instead of the
+serial clamp `MAX_SPEED` (25). Measured (round 4): the track-loss rate while the pan
+slews is 6–8× the parked baseline (motion blur at dim-light exposure), and every
+dropout/aim artifact concentrated in saturated chases — a slower top speed buys
+detection continuity and shorter blind travel. Sweep 20/18/16 if pursuit lags.
 
 ## Control law & anti-jitter
 
