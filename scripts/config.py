@@ -46,11 +46,15 @@ FACE_CONF    = 0.45
 # starved that mechanism and caused ~1s track drops + fresh IDs. Boxes below
 # PERSON_CONF maintain identity only; they are never displayed or targeted.
 TRACK_CONF     = 0.1
-TRACKER_CONFIG = str(SCRIPT_DIR / "bytetrack_dart.yaml")   # tuned thresholds + buffer
+TRACKER_CONFIG = str(SCRIPT_DIR / "botsort_dart.yaml")  # round 5b: BoT-SORT + camera-
+                        # motion compensation (gmc). ByteTrack's image-space IoU cannot
+                        # re-associate across gaps while the turret pans (measured:
+                        # 10/12 re-acquisitions returned NEW ids); gmc re-aligns frames
+                        # before matching. bytetrack_dart.yaml kept as rollback.
 TRACK_STATE_GRACE_S = 8.0   # seconds an unseen track keeps its auth verdict —
                             # time-based (not frames) so it doesn't shrink with fps;
                             # sized to outlive track_buffer at both fps extremes
-TRACK_DEBUG = False         # True: log track-ID set changes (+id(conf) / -id)
+TRACK_DEBUG = True          # TEMP: round-5 ID-churn validation — revert before commit
 
 # ── Targeting continuity (round 4) ──
 # Round-3b forensics: pursuit was stop-start because a conf dip below
@@ -162,7 +166,8 @@ SLEW_BRAKE_MULT = 3.0   # braking (command magnitude decreasing) may slew this m
                         # 2/3/4 on hardware with CONTROL_DEBUG on.
 
 # ── Control debug ──
-CONTROL_DEBUG = False   # True: print per-frame err/pid/ema/slew/cmd for both axes
+CONTROL_DEBUG = True    # TEMP: round-5 ID-churn validation — revert before commit
+                        # True: print per-frame err/pid/ema/slew/cmd for both axes
                         # (compare raw PID vs post-slew at the overshoot moment)
 
 # ── Serial ──

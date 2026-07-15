@@ -1,0 +1,33 @@
+# DART tracker config — BoT-SORT with global motion compensation (round 5b).
+#
+# Why BoT-SORT over ByteTrack here: ByteTrack re-associates lost tracks by
+# box IoU in IMAGE coordinates. DART's camera rides the turret, so during a
+# blur gap the camera itself pans — the person's old and new on-screen boxes
+# barely overlap and re-association fails no matter the threshold (measured:
+# 10/12 re-acquisitions came back as NEW ids at match_thresh 0.7; each new id
+# restarts lock + verdict from cold = the visible sweep/pause/re-lock cycle).
+# BoT-SORT is ByteTrack's two-stage association PLUS gmc: it estimates the
+# global (camera) motion between frames and shifts predicted boxes before
+# matching, making IoU meaningful again on a moving camera.
+#
+# Thresholds carried over from bytetrack_dart.yaml (same rationale — the
+# detector feeds the tracker at TRACK_CONF 0.1, downstream re-filters at
+# PERSON_CONF 0.45; low-conf dets may MAINTAIN tracks, never SPAWN them).
+
+tracker_type: botsort
+
+track_high_thresh: 0.45  # first-stage association bar — same quality bar as PERSON_CONF
+track_low_thresh: 0.1    # second-stage recovery: 0.1-0.45 dets may MAINTAIN a track
+new_track_thresh: 0.5    # ...but never SPAWN one; fresh IDs need a solid detection
+track_buffer: 60         # lost-track survival, ~4 s at 15 fps
+match_thresh: 0.8        # association IoU — 0.8 is right again once GMC re-aligns frames
+fuse_score: True
+
+# BoT-SORT specifics
+gmc_method: sparseOptFlow  # camera-motion estimation (the whole point of round 5b);
+                           # ~ms-scale on 640x480 CPU. "none" degrades to ByteTrack.
+with_reid: False           # appearance re-id needs an extra model + compute — the
+                           # gmc alone targets our measured failure; keep CPU budget
+proximity_thresh: 0.5      # inert while with_reid is False
+appearance_thresh: 0.8     # inert while with_reid is False
+model: auto                # inert while with_reid is False
