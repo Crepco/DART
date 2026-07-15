@@ -50,7 +50,7 @@ TRACKER_CONFIG = str(SCRIPT_DIR / "bytetrack_dart.yaml")   # tuned thresholds + 
 TRACK_STATE_GRACE_S = 8.0   # seconds an unseen track keeps its auth verdict —
                             # time-based (not frames) so it doesn't shrink with fps;
                             # sized to outlive track_buffer at both fps extremes
-TRACK_DEBUG = True          # TEMP: round-4 pursuit validation — revert before commit
+TRACK_DEBUG = False         # True: log track-ID set changes (+id(conf) / -id)
 
 # ── Targeting continuity (round 4) ──
 # Round-3b forensics: pursuit was stop-start because a conf dip below
@@ -162,8 +162,7 @@ SLEW_BRAKE_MULT = 3.0   # braking (command magnitude decreasing) may slew this m
                         # 2/3/4 on hardware with CONTROL_DEBUG on.
 
 # ── Control debug ──
-CONTROL_DEBUG = True    # TEMP: round-4 pursuit validation — revert before commit
-                        # True: print per-frame err/pid/ema/slew/cmd for both axes
+CONTROL_DEBUG = False   # True: print per-frame err/pid/ema/slew/cmd for both axes
                         # (compare raw PID vs post-slew at the overshoot moment)
 
 # ── Serial ──
